@@ -1,0 +1,130 @@
+{
+  "bilibili": {
+    "owner_uid": "",
+    "owner_name": "",
+    "credential_path": "data/cookies.json"
+  },
+  "ai": {
+    "provider": "deepseek",
+    "api_key": "sk-b6e622519f39415490d315843c0aaf26",
+    "model": "deepseek-chat",
+    "base_url": "https://api.deepseek.com/v1"
+  },
+  "persona": {
+    "name": "鲸鱼娘",
+    "self_reference": "我",
+    "user_reference": "主人",
+    "persona_file": "data/persona.md",
+    "enabled": true
+  },
+  "schedule": {
+    "auto_run": false,
+    "wake_windows": [
+      [
+        12,
+        14
+      ],
+      [
+        18,
+        21
+      ]
+    ],
+    "wake_probability": 0.7,
+    "random_delay_minutes": 30,
+    "browse_interval_min_minutes": 5,
+    "browse_interval_max_minutes": 5,
+    "reply_check_interval_minutes": 1,
+    "deepseek_offpeak_only": false,
+    "deepseek_offpeak_windows": ""
+  },
+  "search": {
+    "keywords": [
+      "DeepSeek娘",
+      "鲸鱼娘",
+      "ai娘",
+      "大肥鱼",
+      "二次元"
+    ],
+    "max_results_per_keyword": 5,
+    "order": "totalrank"
+  },
+  "limits": {
+    "max_comments_per_day": 96,
+    "max_likes_per_day": 50,
+    "max_videos_per_run": 20,
+    "skip_analyzed_within_hours": 2,
+    "max_greetings_per_video": 2,
+    "max_greetings_per_run": 5,
+    "max_interactions_per_video": 1,
+    "max_interactions_per_run": 3,
+    "same_video_cooldown_days": 7,
+    "min_score_to_comment": 10,
+    "min_score_to_mention_owner": 0,
+    "mention_owner_on_interesting": false,
+    "max_dm_per_check": 3,
+    "max_dm_per_day": 10
+  },
+  "interaction": {
+    "auto_comment": true,
+    "auto_like_commented_video": true,
+    "comment_requested_video": true,
+    "comment_monitor": false,
+    "auto_reply": false,
+    "reply_own_video_comments": true,
+    "own_video_count": 10,
+    "max_own_video_replies_per_check": 10,
+    "greet_other_whales": true,
+    "monitor_interval_minutes": 1,
+    "reply_to_others": true,
+    "reply_only_owner": false,
+    "reply_interesting_comments": true,
+    "mention_owner_on_interesting": false,
+    "like_replied_comments": true,
+    "favorite_commented_video": true,
+    "follow_commented_up": false,
+    "like_up_dynamics": false,
+    "post_video_dynamic": false,
+    "prob_like_reply": 50,
+    "prob_report_watch": 50,
+    "prob_favorite_video": 20,
+    "prob_follow_up": 10,
+    "prob_like_dynamic": 10,
+    "prob_post_dynamic": 5,
+    "prob_coin_video": 5,
+    "prob_share_video": 2,
+    "prob_watch_later": 10,
+    "prob_repost_dynamic": 3,
+    "reply_private_messages": false,
+    "coin_commented_video": true,
+    "share_commented_video": false,
+    "watch_later_commented_video": true,
+    "repost_up_dynamic": false,
+    "send_danmaku": false,
+    "like_danmaku": false,
+    "prob_send_danmaku": 2,
+    "prob_like_danmaku": 5,
+    "report_watching": false,
+    "reply_scope": "owner"
+  },
+  "analysis": {
+    "enable_frame_analysis": true,
+    "transcription_mode": "off",
+    "local_transcription_enabled": false,
+    "local_transcription_model": "medium",
+    "cloud_transcription": {
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "",
+      "model": "whisper-1"
+    },
+    "local_model_idle_unload_minutes": 10
+  },
+  "diary": {
+    "enabled": true
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "data/logs/bot.log",
+    "max_file_size_mb": 10,
+    "backup_count": 5
+  }
+}

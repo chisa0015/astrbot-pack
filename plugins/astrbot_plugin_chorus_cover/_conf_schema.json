@@ -1,0 +1,464 @@
+{
+  "rvc_base_url": {
+    "description": "RVC API Gradio 后端服务地址",
+    "type": "string",
+    "hint": "你的 Gradio API RVC 后端运行的地址，必须以 / 结尾。\n\n这个后端就是配套的中间层 chorus-mw（不是 RVC 整合包自带的 7897 WebUI）：https://github.com/void-HaoNan/chorus-mw 。\n中间层负责切副歌、分离、移调、变声、混音；插件只用 gradio_client 2.x（sse），直连 RVC 的 Gradio 3.14（ws）会报 Unknown protocol: ws，所以必须有这一层。\n本机默认 http://127.0.0.1:3333/ ；没起中间层时翻唱会失败，点歌不受影响。",
+    "default": "http://127.0.0.1:3333/"
+  },
+  "netease_cookie": {
+    "description": "网易云 MUSIC_U（备用取歌路径用）",
+    "type": "string",
+    "hint": "在浏览器登录 music.163.com 后，从开发者工具 → Application → Cookies 里复制 MUSIC_U 的值（只填值，不要带 'MUSIC_U=' 前缀）。0.5.0 起取歌实现照搬点歌插件：主路 meting 不吃 cookie，不填也能下大部分歌；但会员歌/高音质要靠备用 NodeJS 服务带上这个 cookie 才拿得到。插件只保存在本机配置里，不会外传。",
+    "default": ""
+  },
+  "netease_quality": {
+    "description": "网易云取歌音质（kbps）",
+    "type": "int",
+    "hint": "只支持 128 / 192 / 320 三档，默认 320。备用 NodeJS 服务取歌时对应 level 参数：320→exhigh、192→higher、128→standard；meting 主路由它自己按接口给。填其它值会按 320 处理。",
+    "default": 320,
+    "minimum": 128,
+    "maximum": 320
+  },
+  "netease_meting_base": {
+    "description": "meting 取直链服务地址（主路）",
+    "type": "string",
+    "hint": "照搬点歌插件网易云平台的取直链方式：向「地址?type=song&id=歌曲id」要直链，返回的 url 直接下载。默认 https://api.qijieya.cn/meting/ ，不需要任何密钥；这个第三方服务哪天挂了，可以换成自建或其它 meting 实例。留空则用默认地址。",
+    "default": "https://api.qijieya.cn/meting/"
+  },
+  "netease_api_base": {
+    "description": "NodeJS 网易云 API 地址（备用路）",
+    "type": "string",
+    "hint": "取歌备用路，对应点歌插件 netease_api 平台：主路 meting 拿不到直链时才用它，先试 /song/url/v1?level=xxx（带 cookie 能下会员歌），再退回 /song/url。默认填点歌插件里那个 https://zm.wwoyun.cn ；本机起了 NeteaseCloudMusicApi 就填它的地址（例如服务在 3003 端口就填 http://127.0.0.1:3003）。留空表示不设备用路，只用 meting。",
+    "default": "https://zm.wwoyun.cn"
+  },
+  "netease_api_token": {
+    "description": "NodeJS 网易云 API 访问令牌（可选）",
+    "type": "string",
+    "hint": "备用取歌服务需要鉴权时填这里，插件会带上 Authorization: Bearer <令牌>。默认的 zm.wwoyun.cn 不需要，留空即可。",
+    "default": ""
+  },
+  "source_order": {
+    "description": "取歌音源顺序（同时决定启停）",
+    "type": "list",
+    "hint": "按列表顺序依次尝试：前一个平台搜不到、选不出或下载不下来，就自动换下一个，日志里每个平台一行结果。默认顺序：netease（网易云）→ kugou（酷狗）→ kuwo（酷我）→ qqmusic（QQ音乐）。每行写一个英文平台标识，只认这四个；删掉某一行就等于停用该平台，列表清空则退回默认顺序。顺序里的第一个源通常是主源；网易云用本插件自己的取歌链路，酷狗/酷我/QQ 音乐复用点歌插件 astrbot_plugin_music 的平台实现和配置（QQ 音乐需要点歌插件里配置了 uin，否则自动跳过并记日志）。",
+    "default": [
+      "netease",
+      "kugou",
+      "kuwo",
+      "qqmusic"
+    ]
+  },
+  "alert_admin_on_cookie_expired": {
+    "description": "网易云 cookie 连续失效时提醒管理员",
+    "type": "bool",
+    "hint": "连续 3 次取歌都因为 cookie 相关问题失败（没配置、401、接口 code 不对、只给试听）时，私聊管理员提醒更新 cookie；读不到 admins_id 时发到触发点歌的会话。",
+    "default": true
+  },
+  "cookie_alert_interval_hours": {
+    "description": "cookie 失效提醒最小间隔（小时）",
+    "type": "int",
+    "hint": "同一个失效状态在这段时间内只提醒一次，避免刷屏。取歌成功后状态立即清空，下次失效会重新提醒。",
+    "default": 6,
+    "minimum": 1,
+    "maximum": 168
+  },
+  "qq_official_cards": {
+    "description": "自动识别 QQ 官方机器人并使用 Markdown 卡片",
+    "type": "bool",
+    "hint": "选歌、音色、翻唱状态、帮助和查询结果使用官方 Markdown 卡片。QQ群和单聊无需申请模板；频道需账号开通相应能力。按钮不可用时保留卡片，卡片发送失败才降级为文字。关闭后使用文字菜单。",
+    "default": true
+  },
+  "qq_official_buttons": {
+    "description": "自动识别 QQ 官方机器人并启用交互按钮",
+    "type": "bool",
+    "hint": "配合卡片开关使用。优先使用回调按钮选歌、选音色、翻页和取消，仅点歌者可操作。旧 WebSocket 连接未订阅互动事件时，临时使用点击自动发送的指令按钮，无需手动确认；重启平台连接后恢复回调。Webhook 需在 QQ 后台开启互动事件推送。关闭按钮仍保留 Markdown 卡片。",
+    "default": true
+  },
+  "timeout": {
+    "description": "等待用户选择的超时时间（秒）",
+    "type": "int",
+    "hint": "等待用户选择歌曲或模型的最大时间",
+    "default": 30
+  },
+  "inference_timeout": {
+    "description": "AI推理超时时间（秒）",
+    "type": "int",
+    "hint": "等待后端完成音频转换的最大时间，如果经常超时可以调大这个值",
+    "default": 300
+  },
+  "enable_rvc": {
+    "description": "启用RVC推理引擎",
+    "type": "bool",
+    "hint": "开启后允许使用 RVC 模型翻唱（命令 /rvc、LLM 工具 rvc_cover / smart_cover、本地音频翻唱）。关闭后这些入口都会提示功能已关闭。",
+    "default": true
+  },
+  "rvc_models_keywords": {
+    "description": "RVC 模型别名配置",
+    "type": "list",
+    "hint": "这是一个列表，每行一个模型。格式为 '模型文件名|||别名'。使用 /刷新rvc模型 命令自动获取",
+    "default": []
+  },
+  "rvc_models_dir": {
+    "description": "RVC 音色模型文件夹",
+    "type": "string",
+    "hint": "留空 = 用中间层当前的目录（默认是 RVC 整合包的 assets\\weights）。\n\n想直接看真实路径并打开这个文件夹：发 /rvc模型文件夹。索引 .index 放 RVC 的 assets\\indices，这个不用填。\n\n想换目录：.pth 放过去 → 给中间层设环境变量 CHORUS_WEIGHTS_DIR 并重启 → 回来填同一个路径（不填也行，填了会拿来做一致性核对）。",
+    "default": ""
+  },
+  "model_library_dir": {
+    "description": "分类音色库目录（可选）",
+    "type": "string",
+    "hint": "你把模型按语言/角色分类存放的根目录，例如 D:\\你的模型库\\RVC（下面有 中文、日语 这样的子文件夹）。填了以后发 /同步音色库，插件会把库里的 .pth/.index 自动硬链接进 RVC 的 assets 目录，再把模型列表刷新一遍，不用手动建链接。留空则这条命令不可用。",
+    "default": ""
+  },
+  "llm_force_mode": {
+    "description": "LLM强制模式 - 禁用所有手动命令",
+    "type": "bool",
+    "hint": "开启后，/rvc 等手动命令将被禁用，只能通过对话让 LLM 自动调用翻唱工具。",
+    "default": false
+  },
+  "enable_smart_cover": {
+    "description": "启用方案A：智能单步翻唱（smart_cover）",
+    "type": "bool",
+    "hint": "提供一键智能翻唱工具，自动完成搜索+选择+翻唱全流程。用户只需说'翻唱《歌名》'即可。",
+    "default": true
+  },
+  "enable_enhanced_context": {
+    "description": "启用方案B：增强上下文记忆",
+    "type": "bool",
+    "hint": "优化搜索结果返回格式，增加结构化信息帮助LLM更好地记住选项和上下文。",
+    "default": true
+  },
+  "persona_song_pick_enable": {
+    "description": "按人格自动选歌",
+    "type": "bool",
+    "hint": "开启后，用户只说「唱首歌」而没给歌名时，插件会要求模型按当前人格的偏好自己挑歌：避开榜单和短视频里烂大街的热歌，优先与人设气质相符的作品，并避开最近唱过的。关闭时沿用原来的行为（模型自己决定，容易挑热门歌）。",
+    "default": false
+  },
+  "persona_song_pick_hint": {
+    "description": "额外选歌偏好",
+    "type": "string",
+    "hint": "可选。补充一句你希望它往哪个方向挑，例如「优先日系摇滚和游戏 OST，避开抖音神曲」或「多挑九十年代粤语歌」。留空则完全交给人格判断。",
+    "default": ""
+  },
+  "persona_song_pick_avoid_count": {
+    "description": "最近唱过的不重复数量",
+    "type": "int",
+    "hint": "从使用记录里取最近多少首作为「别再唱」清单，避免反复唱同一批歌。默认 12，范围 0~50。",
+    "default": 12
+  },
+  "enable_confirm_mechanism": {
+    "description": "启用方案C：确认机制",
+    "type": "bool",
+    "hint": "提供确认选择工具，在执行重要操作前让LLM确认用户意图，支持'就这个''换一个''确定'等自然语言指令。",
+    "default": true
+  },
+  "enable_batch_cover": {
+    "description": "启用方案D：批量翻唱",
+    "type": "bool",
+    "hint": "支持一次请求翻唱多首歌曲，用户可以说'帮我翻唱这三首歌：《A》《B》《C》'。",
+    "default": true
+  },
+  "enable_preference_learning": {
+    "description": "启用方案E：偏好学习与推荐",
+    "type": "bool",
+    "hint": "记录用户常用的模型、音调偏好等，下次翻唱时能推荐最合适配置。数据保存在 data 目录下。",
+    "default": true
+  },
+  "rvc_default_model": {
+    "description": "选择音色模型（RVC 默认音色）",
+    "type": "string",
+    "hint": "优先使用这里选中的模型文件；留空则用模型列表里的第 1 个。仅对 RVC 生效，模型需先通过 /刷新rvc模型 出现在列表里；选了但列表里找不到同名模型时会回落到第 1 个，并在日志里记一条警告。",
+    "options": [
+      "Yuuka.pth",
+      "ainuo.pth",
+      "guanguanV1.pth",
+      "keruanV1.pth",
+      "kikiV1.pth",
+      "youzhanv2-xi.pth",
+      "三月七.pth"
+    ],
+    "default": ""
+  },
+  "language_model_enable": {
+    "description": "按歌曲语言自动选音色",
+    "type": "bool",
+    "hint": "开启后，翻唱前先判断这首歌是中文、日语还是英文，再用下面对应那一档的音色。用户这次自己点名了音色时以用户为准。判不出来（纯音乐、没歌词也没线索）就用默认音色，不猜。",
+    "default": true
+  },
+  "language_model_zh": {
+    "description": "中文歌用的音色",
+    "type": "string",
+    "hint": "唱中文歌时优先用它。留空表示中文歌走「默认音色」；选项由 /刷新rvc模型 更新，选中的模型被删掉时会回落到默认音色并提示一句。",
+    "options": [],
+    "default": ""
+  },
+  "language_model_ja": {
+    "description": "日语歌用的音色",
+    "type": "string",
+    "hint": "唱日语歌时优先用它。留空表示日语歌走「默认音色」；选项由 /刷新rvc模型 更新，选中的模型被删掉时会回落到默认音色并提示一句。",
+    "options": [],
+    "default": ""
+  },
+  "language_model_en": {
+    "description": "英文歌用的音色",
+    "type": "string",
+    "hint": "唱英文歌时优先用它。留空表示英文歌走「默认音色」；选项由 /刷新rvc模型 更新，选中的模型被删掉时会回落到默认音色并提示一句。",
+    "options": [],
+    "default": ""
+  },
+  "default_key_shift": {
+    "description": "默认音调调整",
+    "type": "int",
+    "hint": "当用户未指定时使用的默认音调调整值（-12到12）",
+    "default": 0
+  },
+  "max_batch_size": {
+    "description": "批量翻唱最大数量",
+    "type": "int",
+    "hint": "单次批量翻唱的最大歌曲数量限制，防止滥用",
+    "default": 5
+  },
+  "preference_storage_path": {
+    "description": "偏好数据存储路径",
+    "type": "string",
+    "hint": "留空 = data/plugin_data/astrbot_plugin_chorus_cover/user_preferences.json（推荐，跟其它插件的数据放一起，AstrBot 迁移/备份时不会漏）。填了就用填的路径；旧版默认的 data/user_preferences.json 会自动迁移过来。",
+    "default": ""
+  },
+  "enable_llm_success_notify": {
+    "description": "处理完成后通知大语言模型 (LLM)",
+    "type": "bool",
+    "hint": "开启后，后台生成完音频会给 LLM 发送系统消息，让 LLM 用其人设回复一句'生成成功'的提示",
+    "default": true
+  },
+  "notify_progress": {
+    "description": "发送翻唱进度提示",
+    "type": "bool",
+    "hint": "关闭时一条进度都不发（默认关闭）。打开后每次进度也由人格模型说一句人话，不会刷屏",
+    "default": false
+  },
+  "notify_retry": {
+    "description": "发送风控自动重试提示",
+    "type": "bool",
+    "hint": "关闭时遇到风控/取链接失败自动重试不打扰用户（默认关闭）。打开后同样由人格模型说一句",
+    "default": false
+  },
+  "f0_method": {
+    "description": "RVC音高提取算法（F0方法）",
+    "type": "string",
+    "hint": "可选值：rmvpe（默认，效果最好，适合干净人声）、crepe（效果好但更吃GPU，电音人声推荐）、harvest（ZLUDA/AMD模式下可能报tensor维度错误，不推荐）、pm（速度最快但效果一般）。遇到电音人声跑调时建议切换为crepe。",
+    "default": "rmvpe"
+  },
+  "index_rate": {
+    "description": "RVC特征检索比率（Index Rate）",
+    "type": "string",
+    "hint": "控制RVC推理时特征检索（Index）的权重。范围0~1，默认0.8。值越高越接近原模型音色但可能生硬，值越低模型自由发挥更多但可能偏离音色。电音人声沙哑时可尝试降低到0.5。",
+    "default": "0.8"
+  },
+  "rms_mix_rate": {
+    "description": "人声音量起伏贴合原唱的程度（rms_mix_rate）",
+    "type": "float",
+    "hint": "范围 0~1，默认 0.35。调大（往 1 靠）：成品音量起伏更贴原唱，唱得轻的地方也轻，听着更自然，但人声可能被压小；调小（往 0 靠）：音量更平稳、人声更冲，太小会显得发闷、没有起伏。常用区间 0.3~0.5。",
+    "default": 0.35,
+    "minimum": 0,
+    "maximum": 1
+  },
+  "protect": {
+    "description": "保护清音与气声的程度（protect）",
+    "type": "float",
+    "hint": "范围 0~0.5，默认 0.33。调大：齿音、换气、气声这些轻的地方更不容易被电音化、撕裂感和沙音更少；调小：这些细节更贴模型音色，但容易出现电流味。电音/高音失真时往 0.4~0.5 调，想更贴音色往 0.2 调。",
+    "default": 0.33,
+    "minimum": 0,
+    "maximum": 0.5
+  },
+  "inst_volume_db": {
+    "description": "伴奏音量（dB）",
+    "type": "float",
+    "hint": "范围 -20~0，默认 -6（负数是把伴奏压小）。调大（往 0 靠）：伴奏更响、现场感更强；调小（往 -20 靠）：伴奏更弱，几乎只剩人声。人声被伴奏盖住就往 -10 以下调，想听清伴奏就往 -3 左右调。",
+    "default": -6.0,
+    "minimum": -20,
+    "maximum": 0
+  },
+  "vocal_volume_db": {
+    "description": "人声音量（dB）",
+    "type": "float",
+    "hint": "范围 -12~+12，默认 0（0 表示不增不减）。调大：人声更靠前、更抢耳；调小：人声往后退、更像混在伴奏里。人声太尖太吵就往 -3 左右调，人声太弱就往 +3 左右调。",
+    "default": 0.0,
+    "minimum": -12,
+    "maximum": 12
+  },
+  "enable_send_file": {
+    "description": "推理完成后同时以文件形式发送到群聊",
+    "type": "bool",
+    "hint": "开启后，翻唱完成时除了发送语音消息外，还会以文件附件的形式再发送一份到群聊，方便群友下载保存。关闭则只发送语音消息。",
+    "default": false
+  },
+  "enable_config_report": {
+    "description": "翻唱完成后发送配置信息报告",
+    "type": "bool",
+    "hint": "开启后，翻唱完成时会额外发送一条包含本次翻唱配置的消息（如：📊 本次配置：类型=RVC, 模型=塔菲, 调音=+0）。关闭则只发送音频不发送配置报告。",
+    "default": true
+  },
+  "enable_auto_key_shift": {
+    "description": "启用自动升降调（根据原曲歌手与模型性别自动调整音调）",
+    "type": "bool",
+    "hint": "开启后，当用户未手动指定升降调时，插件会自动识别原曲歌手性别和模型性别，性别不同时自动应用升降调。例如：男歌手的歌用女声模型翻唱时自动升调，女歌手的歌用男声模型翻唱时自动降调。手动指定了升降调值时不会覆盖。",
+    "default": false
+  },
+  "enable_auto_key_shift_debug": {
+    "description": "自动升降调调试信息输出到群聊",
+    "type": "bool",
+    "hint": "开启后，LLM判断歌手性别、模型性别以及自动升降调的过程会实时输出到群聊中，方便排查自动升降调是否正常工作。",
+    "default": false
+  },
+  "gender_detection_timeout": {
+    "description": "自动升降调性别识别超时（秒）",
+    "type": "int",
+    "hint": "嵌套LLM判断歌手/歌曲/模型性别的最长等待时间。超时后会跳过或使用本地规则继续翻唱，不会阻塞中间层。",
+    "default": 15,
+    "minimum": 3,
+    "maximum": 60
+  },
+  "music_api_timeout": {
+    "description": "音乐搜索接口超时（秒）",
+    "type": "int",
+    "hint": "网易云搜索无响应时的最长等待时间，超时后返回明确错误，避免后台任务永久卡住。",
+    "default": 20,
+    "minimum": 5,
+    "maximum": 120
+  },
+  "male_to_female_shift": {
+    "description": "男→女 升调值（半音数）",
+    "type": "int",
+    "hint": "当原曲歌手为男、模型为女声时自动升调的半音数。男声转女声一般是 +4~+6；+12 是整八度，容易变电音。默认 +5，按实际效果微调。",
+    "default": 5,
+    "minimum": -24,
+    "maximum": 24
+  },
+  "female_to_male_shift": {
+    "description": "女→男 降调值（半音数）",
+    "type": "int",
+    "hint": "当原曲歌手为女、模型为男声时自动降调的半音数。女声转男声一般是 -4~-6；默认 -5，按实际效果微调。",
+    "default": -5,
+    "minimum": -24,
+    "maximum": 24
+  },
+  "artist_gender_map": {
+    "description": "歌手性别映射表",
+    "type": "list",
+    "hint": "手动指定歌手的性别，每行一个，格式为 '歌手名:male' 或 '歌手名:female'。例如：周杰伦:male、邓紫棋:female、Taylor Swift:female。映射表优先级最高，未在此表中的歌手会由LLM自动判断性别。",
+    "default": []
+  },
+  "model_gender_map": {
+    "description": "模型性别映射表",
+    "type": "list",
+    "hint": "手动指定模型的性别，每行一个，格式为 '模型别名:male' 或 '模型别名:female'。例如：塔菲:female、派蒙:female、某男声模型:male。模型别名需与 rvc_models_keywords 中的别名一致。未在此表中的模型无法自动升降调。",
+    "default": []
+  },
+  "shift_accompaniment": {
+    "description": "升降调时同时调整伴奏音高",
+    "type": "bool",
+    "hint": "开启后，设置升降调时伴奏会同步调整以匹配人声。关闭则只调整人声音高，伴奏保持原调。适合想单独听人声变化效果时使用。默认开启。",
+    "default": true
+  },
+  "render_mode": {
+    "description": "翻唱时长模式（唱多长）",
+    "type": "string",
+    "hint": "chorus＝只翻唱副歌片段（默认，45 秒，最快）；custom＝自定义时长，用下面的 chorus_seconds（20~180 秒），同样是先切出来再分离；full＝整首翻唱（分离整首、变声整首）。注意：完整翻唱耗时明显更长，可能是副歌模式的 5~10 倍，显存占用也更高，长歌容易超出 inference_timeout。需要后端 chorus-mw 0.7.0 及以上支持；老后端会忽略此项、仍按副歌模式处理。",
+    "options": [
+      "chorus",
+      "full",
+      "custom"
+    ],
+    "labels": [
+      "副歌片段（默认，最快）",
+      "整首翻唱（很慢，显存占用高）",
+      "自定义时长"
+    ],
+    "default": "chorus"
+  },
+  "chorus_seconds": {
+    "description": "翻唱时长（秒）",
+    "type": "int",
+    "hint": "render_mode=custom 时生效，也是 chorus 模式的片段长度：范围 20~180，默认 45。中间层实际会先切「这个时长 + 15 秒」去做分离，再在里面精挑最终这一段。整首翻唱（full）不受此项影响。",
+    "default": 45,
+    "minimum": 20,
+    "maximum": 180
+  },
+  "chorus_start_seconds": {
+    "description": "指定副歌起点（秒，0=自动）",
+    "type": "int",
+    "hint": "0 表示自动挑段落。填大于 0 的秒数时，就从这一秒开始截取（时长仍按上面的模式）。遇到自动挑到说唱/念白段、转出来发糊的歌，可以用它手动挑一个干净的副歌起点。需要中间层 ≥0.9.4。",
+    "default": 0
+  },
+  "enable_inject_context": {
+    "description": "将翻唱任务状态注入LLM上下文记忆",
+    "type": "bool",
+    "hint": "开启后，翻唱任务完成、失败或缓存命中时，会把结果写入LLM的对话上下文中，让LLM记住任务真实状态。这样用户再次请求时LLM不会误以为任务还在进行中。",
+    "default": true
+  },
+  "enable_task_tracking": {
+    "description": "启用翻唱任务状态追踪",
+    "type": "bool",
+    "hint": "开启后，会追踪每个用户/群聊正在进行的翻唱任务，防止重复创建任务。同时LLM可以查询当前任务状态。如果任务卡死超过超时时间会自动清理。",
+    "default": true
+  },
+  "task_timeout_seconds": {
+    "description": "翻唱任务超时时间（秒）",
+    "type": "int",
+    "hint": "任务超过这个时间未完成会自动释放状态。整首（full）模式处理长歌曲可能耗时较久，建议与 inference_timeout 保持一致。",
+    "default": 9000,
+    "minimum": 60,
+    "maximum": 14400
+  },
+  "enable_local_audio_cover": {
+    "description": "启用本地音频文件翻唱",
+    "type": "bool",
+    "hint": "开启后，群友可以直接发送语音消息或音频文件（mp3/wav等）进行翻唱，不需要先搜索歌曲。适合群友自己唱歌让AI修音/换音色。",
+    "default": true
+  },
+  "max_local_audio_size_mb": {
+    "description": "本地音频文件最大大小限制（MB）",
+    "type": "int",
+    "hint": "超过此大小的音频文件会被拒绝，防止过大的文件导致推理过慢或爆显存。建议10-30MB。",
+    "default": 20,
+    "minimum": 1,
+    "maximum": 100
+  },
+  "local_audio_cache_ttl": {
+    "description": "本地音频缓存有效期（秒）",
+    "type": "int",
+    "hint": "用户发过的语音/音频在这个时间内可以直接用 /本地翻唱 复用，超时后要求重新发送。默认 300 秒。",
+    "default": 300,
+    "minimum": 10,
+    "maximum": 3600
+  },
+  "local_audio_trigger_keywords": {
+    "description": "本地音频自动触发关键词",
+    "type": "list",
+    "hint": "当群友发送语音/音频文件且文字中包含这些关键词时，自动触发本地翻唱。每行一个关键词。默认只留「翻唱」「变声」这类明确想唱的词；「转换」「处理」「修音」这种泛词会把只想聊天或点歌的消息也吞进来，不建议再加。",
+    "default": [
+      "翻唱",
+      "变声"
+    ]
+  },
+  "local_audio_auto_trigger": {
+    "description": "开启本地音频自动触发",
+    "type": "bool",
+    "hint": "默认关闭：开启后只要消息里带音频又碰到触发词就会自动翻唱，容易和点歌、普通聊天抢活。需要时再打开；关闭后仍可用 /本地翻唱 命令或 LLM 工具触发。",
+    "default": false
+  },
+  "local_audio_default_model": {
+    "description": "本地音频自动触发默认模型",
+    "type": "string",
+    "hint": "当自动触发本地翻唱且未指定模型时，默认使用的模型别名。留空则使用第一顺位模型。",
+    "default": ""
+  },
+  "local_audio_default_shift": {
+    "description": "本地音频自动触发默认音调",
+    "type": "int",
+    "hint": "当自动触发本地翻唱且未指定升降调时，默认的音调调整值（-12到12）。",
+    "default": 0,
+    "minimum": -24,
+    "maximum": 24
+  }
+}

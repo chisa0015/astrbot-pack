@@ -1,0 +1,32 @@
+{
+  "saucenao_key": {
+    "description": "SauceNAO API Key（saucenao.com 免费注册，100次/天）",
+    "type": "string",
+    "default": ""
+  },
+  "proxy": {
+    "description": "访问代理",
+    "type": "string",
+    "default": "http://127.0.0.1:7890"
+  },
+  "lens_enabled": {
+    "description": "SauceNAO 无结果时自动跑 Google Lens（需 Playwright，较慢）",
+    "type": "bool",
+    "default": true
+  },
+  "use_saucenao": {
+    "description": "是否同时使用 SauceNAO（默认关闭，只用 Lens）",
+    "type": "bool",
+    "default": false
+  },
+  "x_auth_token": {
+    "description": "X(Twitter) 登录 cookie：auth_token（填了才会去 X 搜真实主页）",
+    "type": "string",
+    "default": ""
+  },
+  "x_ct0": {
+    "description": "X 的 ct0 cookie（与 auth_token 配套）",
+    "type": "string",
+    "default": ""
+  }
+}
