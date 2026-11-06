@@ -1,0 +1,21 @@
+{
+  "u_GXOnGE4nvmHvVX3-BLwsNw": {
+    "type": "friend",
+    "user_id": "2569574296",
+    "nickname": "无",
+    "comment": "65387345",
+    "source": "QQ空间",
+    "time": "2026-10-28 20:58:02",
+    "req_time": "1584181951",
+    "notify_ids": [],
+    "request_id": "1",
+    "request_flag": "u_GXOnGE4nvmHvVX3-BLwsNw",
+    "request_type": "friend",
+    "request_api": "set_doubt_friends_add_request",
+    "snowluma_doubt": true,
+    "qq_level": 0,
+    "vip_label": "无会员",
+    "reg_date": "2022-01-01",
+    "profile_fetched": true
+  }
+}

@@ -1,0 +1,8 @@
+{
+    "saucenao_key": "1b7e17c6707692417171d9bd208a5d6f8125c36b",
+    "proxy": "http://127.0.0.1:7890",
+    "lens_enabled": true,
+    "use_saucenao": false,
+    "x_auth_token": "0b1a009a3ba1e757e8b8e281734d05e3f6a63a44",
+    "x_ct0": "45944e0ff3fe986ca633670efe970c6158706317be20f2d5fe2ee0d6e3cef27421ff9625805b43d81dd3d2891111ff21f8cb6b909432eb97f30141a3642ca89e88e374c0332360b586aa7fa3aa500857"
+}

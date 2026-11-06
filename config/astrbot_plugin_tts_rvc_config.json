@@ -1,0 +1,14 @@
+﻿{
+  "enabled": false,
+  "service_url": "http://127.0.0.1:9881/tts",
+  "voice_id": "elaina_ja",
+  "private_only": true,
+  "group_default": false,
+  "admin_only": true,
+  "dual_output": true,
+  "only_llm": true,
+  "min_chars": 2,
+  "max_chars": 160,
+  "timeout": 300.0,
+  "cache": true
+}

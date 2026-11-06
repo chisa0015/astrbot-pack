@@ -1,0 +1,8 @@
+name: astrbot_plugin_zz_ja_lock
+display_name: 日语回复锁（仅私聊）
+short_desc: 只在私聊（指定 QQ）强制日语回复，群聊保持中文
+desc: 在 on_llm_request 末尾按会话类型注入语言规则：FriendMessage 且发送者在白名单时强制日语；群聊与非白名单私聊不注入，保持模型默认中文。
+version: 1.2.0
+author: yesha
+repo: ""
+astrbot_version: ">=4.17.0"

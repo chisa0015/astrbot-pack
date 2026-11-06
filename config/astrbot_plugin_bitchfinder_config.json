@@ -1,0 +1,16 @@
+{
+    "max_results": 8,
+    "timeout": 20,
+    "proxy": "http://127.0.0.1:7890",
+    "saucenao_api_key": "1b7e17c6707692417171d9bd208a5d6f8125c36b",
+    "gcv_api_key": "",
+    "serpapi_api_key": "",
+    "serpapi_visual_matches": false,
+    "baidu_enabled": true,
+    "copyseeker_enabled": true,
+    "ascii2d_cf_clearance": "",
+    "use_llm_candidates": true,
+    "follower_tiebreak": true,
+    "send_as_forward": false,
+    "lens_playwright_enabled": true
+}

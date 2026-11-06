@@ -4,8 +4,5 @@ __pycache__/
 .venv/
 venv/
 *.log
-data/
-config.json
-cookies.json
 *.sqlite3
 *.db

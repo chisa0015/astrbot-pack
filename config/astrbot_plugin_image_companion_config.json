@@ -1,0 +1,113 @@
+﻿{
+    "comfyui":  {
+                    "base_url":  "",
+                    "api_key":  "",
+                    "workflows":  [
+
+                                  ],
+                    "text2img_workflow":  "",
+                    "selfie_workflow":  "",
+                    "rewrite_enabled":  true,
+                    "prompt_provider_id":  "",
+                    "rewrite_instructions":  "",
+                    "aspect":  "auto",
+                    "portrait_size":  "1024x1536",
+                    "landscape_size":  "1536x1024",
+                    "square_size":  "1024x1024",
+                    "size_multiple":  8,
+                    "max_pixels":  4194304,
+                    "random_seed":  true,
+                    "timeout_seconds":  180,
+                    "model_timeout_seconds":  60
+                },
+    "enabled":  true,
+    "migration":  {
+                      "reuse_private_companion_settings":  true,
+                      "reuse_private_companion_assets":  true
+                  },
+    "engine":  {
+                   "mode":  "legacy",
+                   "instant_rollback":  false,
+                   "anima_scopes":  [
+                                        "selfie"
+                                    ],
+                   "routes":  [
+
+                              ],
+                   "workflow_mappings":  [
+
+                                         ],
+                   "wardrobe_profiles":  [
+
+                                         ],
+                   "output_validation":  true,
+                   "allowed_reference_roots":  [
+
+                                               ]
+               },
+    "image":  {
+                  "photo_generation_backend":  "external",
+                  "external_image_api_platform":  "openai",
+                  "external_image_api_base_url":  "http://127.0.0.1:9868/v1",
+                  "external_image_api_key":  "sk-local-pollinations",
+                  "external_image_api_model":  "flux",
+                  "external_image_api_size":  "512x768",
+                  "external_image_api_timeout_seconds":  600,
+                  "external_image_api_custom_headers":  "",
+                  "external_image_api_endpoints":  [
+
+                                                   ],
+                  "enable_backup_external_image_api":  false,
+                  "backup_external_image_api_platform":  "auto",
+                  "backup_external_image_api_base_url":  "",
+                  "backup_external_image_api_key":  "",
+                  "backup_external_image_api_model":  "",
+                  "comfyui_text2img_workflow_name":  "",
+                  "comfyui_selfie_workflow_name":  "",
+                  "comfyui_photo_wait_seconds":  600,
+                  "custom_photo_tool_name":  "",
+                  "custom_photo_tool_prompt_param":  "prompt",
+                  "custom_photo_tool_kind_param":  "",
+                  "custom_photo_tool_reference_param":  "",
+                  "enable_photo_reference_image":  false,
+                  "photo_persona_reference_image_path":  "",
+                  "photo_reference_library":  [
+
+                                              ],
+                  "photo_reference_catalog":  [
+
+                                              ],
+                  "photo_generation_prompt_format":  "traditional",
+                  "photo_generation_style":  "真实",
+                  "photo_generation_style_custom_prompt":  "",
+                  "photo_generation_negative_prompt_mode":  "safe_default",
+                  "photo_generation_negative_prompt":  "",
+                  "photo_generation_text2img_negative_prompt":  "",
+                  "photo_generation_selfie_negative_prompt":  "",
+                  "photo_generation_edit_negative_prompt":  "",
+                  "photo_generation_fixed_prompt":  "",
+                  "photo_generation_text2img_fixed_prompt":  "",
+                  "photo_generation_selfie_fixed_prompt":  "",
+                  "photo_generation_edit_fixed_prompt":  "",
+                  "photo_generation_scene_presets":  "",
+                  "enable_generated_photo_cleanup":  true,
+                  "generated_photo_retention_days":  30,
+                  "generated_photo_max_mb":  512,
+                  "enable_local_photo_load_guard":  true,
+                  "local_photo_cpu_busy_percent":  85,
+                  "local_photo_memory_busy_percent":  88,
+                  "debug":  {
+                                "enabled":  false,
+                                "capture_mode":  "redacted",
+                                "include_secrets":  false,
+                                "max_file_size_kb":  10240,
+                                "backup_count":  5,
+                                "capture_payloads":  false,
+                                "retention_days":  14,
+                                "max_body_kb":  256,
+                                "max_depth":  10,
+                                "max_items":  200,
+                                "max_string_chars":  12000
+                            }
+              }
+}

@@ -1,0 +1,25 @@
+{
+  "enabled": true,
+  "migration": {
+    "reuse_private_companion_data": true
+  },
+  "qzone": {
+    "enabled": true,
+    "cookie": "pt2gguin=o0001132046; uin=o0001132046; skey=@Lh3bkemN6; pt_recent_uins=aebd4c8c96f31f9f4d0b0b1330d9d64faa86c0ebe83ea9183bea97f7ca14143db87cfd8f727929a114dd201c121766d0e8c58e47b7839e57; RK=rahSAqmBEI; ptnick_1132046=e9b2b8e9b1bce5a898; ptcz=60ce35c9d79bb68b547b6a616170d5207420c45737b2732478cb36b943711a16; p_uin=o0001132046; pt4_token=yxmMf6SCSvkYOu5rRwitA7*eRInyjg4-ULkUYyRnmS8_; p_skey=xqVFjeFcjOK5BJ2N8kmw0tgTy8kXT4qI1PNAWjymj5o_; qzone_check=1132046_1793405227; tgw_l7_route=ebfbb536e9223ff52f219f2bb24222d8",
+    "life_publish_enabled": true,
+    "comment_inbox_enabled": false,
+    "generated_image_enabled": true
+  },
+  "creative": {
+    "enable_creative_writing": true,
+    "creative_inspiration_probability": 0.2,
+    "creative_share_probability": 0.28,
+    "creative_chars_per_session": 220,
+    "creative_max_active_projects": 2,
+    "creative_direction_prompt": "",
+    "enable_creative_cover_generation": false,
+    "CREATIVE_PROVIDER_ID": "openai/gpt-6-luna",
+    "CREATIVE_OUTLINE_PROVIDER_ID": "openai/gpt-6-luna",
+    "CREATIVE_REVIEW_PROVIDER_ID": "openai/gpt-6-luna"
+  }
+}

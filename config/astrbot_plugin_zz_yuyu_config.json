@@ -1,0 +1,7 @@
+﻿{
+    "engines": "lens,yandex",
+    "timeout_sec": 60,
+    "max_accounts": 3,
+    "proxy": "auto",
+    "ack_text": "收到，开始找鸡"
+}

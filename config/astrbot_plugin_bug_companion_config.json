@@ -1,0 +1,45 @@
+{
+  "collection": {
+    "enabled": true,
+    "target_groups": [
+      "820569056"
+    ],
+    "quiet_seconds": 12,
+    "batch_max_messages": 40,
+    "batch_max_chars": 10000,
+    "ignored_sender_ids": []
+  },
+  "models": {
+    "managed_plugins": [],
+    "organizer_provider_id": "openai/gpt-6-luna",
+    "fallback_provider_id": "openai/gpt-6-luna",
+    "timeout_seconds": 60,
+    "max_candidates_per_batch": 6,
+    "custom_organizer_guidance": ""
+  },
+  "answers": {
+    "auto_answer": true,
+    "answer_min_confidence": 72,
+    "group_cooldown_seconds": 120,
+    "max_reference_issues": 4
+  },
+  "repository_updates": {
+    "enabled": false,
+    "repositories": [],
+    "target_groups": [],
+    "interval_minutes": 60,
+    "notify_commits": true,
+    "notify_releases": true,
+    "ai_summary_enabled": false,
+    "ai_summary_provider_id": "",
+    "ai_summary_max_chars": 700,
+    "max_items_per_check": 5
+  },
+  "retention": {
+    "raw_message_days": 90,
+    "store_non_candidate_context": true
+  },
+  "appearance": {
+    "theme": "system"
+  }
+}

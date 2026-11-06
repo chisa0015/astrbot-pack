@@ -1,0 +1,103 @@
+{
+  "on_poke": true,
+  "poke_cd": 10,
+  "group_poke_cd": 2,
+  "follow_prob": 1.0,
+  "antipoke": {
+    "weight": 10,
+    "max_times": 5
+  },
+  "llm": {
+    "weight": 50,
+    "template": "{username} 戳了你一下, 请你用一句话回复一下, 确保符合人设的同时夹带生气甚至愤怒的情绪, 考虑上下文, 确保通顺不突兀"
+  },
+  "face": {
+    "weight": 10,
+    "pool": [
+      1,
+      11,
+      14,
+      15,
+      23,
+      25,
+      26,
+      27,
+      31,
+      46,
+      97,
+      98,
+      18,
+      265,
+      266,
+      267,
+      271,
+      287,
+      312,
+      352,
+      427
+    ],
+    "max_copy_count": 3
+  },
+  "meme": {
+    "weight": 10,
+    "pool": [
+      "files/meme/pool/logo.png"
+    ],
+    "paths": [
+      "data/plugin_data/meme_manager/packs/yctf-taffy/memes/angry",
+      "data/plugin_data/meme_manager/packs/yctf-taffy/memes/baka"
+    ]
+  },
+  "record": {
+    "weight": 0,
+    "pool": []
+  },
+  "ban": {
+    "weight": 10,
+    "duration": 60,
+    "delta": 30,
+    "ban_template": "{username} 戳了你一下, 然后被你禁言了, 请你用一句话嘲讽一下, 确保符合人设的同时夹带幸灾乐祸的情绪, 考虑上下文, 确保通顺不突兀",
+    "ban_fail_template": "{username} 戳了你一下, 你因为你的身份没有这人高而无法禁言这人（群主>管理员>成员）, 请你用一句话吐槽一下, 确保符合人设的同时夹带生气甚至愤怒的情绪的情绪, 考虑上下文, 确保通顺不突兀"
+  },
+  "command": {
+    "weight": 10,
+    "pool": [
+      "盒",
+      "捣",
+      "踩",
+      "玩",
+      "拍",
+      "丢",
+      "揍",
+      "爬",
+      "锤",
+      "吃",
+      "敲",
+      "滚",
+      "啃",
+      "胡桃啃",
+      "捏",
+      "小丑",
+      "震动",
+      "晃脑",
+      "上香",
+      "咖波撕"
+    ]
+  },
+  "poke_max_times": 5,
+  "poke_interval": 0.5,
+  "poke_keywords": [
+    "笨蛋",
+    "人机",
+    "机器人",
+    "bot"
+  ],
+  "scheduler": {
+    "enabled": true,
+    "cron": "30 22 * * *",
+    "target": [
+      "460973561:1959676873"
+    ],
+    "times": 1
+  }
+}

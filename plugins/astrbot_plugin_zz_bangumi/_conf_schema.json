@@ -1,0 +1,85 @@
+﻿{
+    "max_items":  {
+                      "type":  "int",
+                      "description":  "每次最多列几部（0=全部）",
+                      "hint":  "0 = 不限（把今天的全部番都列出来，按 batch_size 分批发）；\u003e0 为上限，最多 200。",
+                      "default":  0
+                  },
+    "push_enabled":  {
+                         "type":  "bool",
+                         "description":  "每日定时推送",
+                         "hint":  "开启后每天 push_time 把「今日更新」推到 push_targets 指定的会话。",
+                         "default":  false
+                     },
+    "push_time":  {
+                      "type":  "string",
+                      "description":  "推送时间",
+                      "hint":  "24 小时制 HH:MM，例如 20:00。",
+                      "default":  "20:00"
+                  },
+    "push_targets":  {
+                         "type":  "list",
+                         "description":  "推送目标会话",
+                         "hint":  "统一消息来源（umo）列表，例如 aiocqhttp:FriendMessage:2899675402（主人私聊）、aiocqhttp:GroupMessage:820569056（群）。可写 owner 代表主人私聊。",
+                         "default":  [
+                                         "owner"
+                                     ]
+                     },
+    "cover_count":  {
+                        "type":  "int",
+                        "description":  "附带封面图数量",
+                        "hint":  "每次回复附带前 N 部的封面图（0=不发图，最大 15），默认 6。",
+                        "default":  6
+                    },
+    "batch_size":  {
+                       "type":  "int",
+                       "description":  "每条消息几部（分批发送）",
+                       "hint":  "默认 6：17 部会拆成 3 条消息（6+6+5），每条都带封面图。",
+                       "default":  6
+                   },
+    "source":  {
+                   "type":  "string",
+                   "description":  "新番数据源",
+                   "hint":  "merged=bgm 名单 + 吐槽补充（推荐）；bangumi=只用 bgm；tucao=只用吐槽。",
+                   "default":  "merged",
+                   "options":  [
+                                   "merged",
+                                   "bangumi",
+                                   "tucao"
+                               ]
+               },
+    "play_link_items":  {
+                            "type":  "int",
+                            "description":  "解析播放链接的条数",
+                            "hint":  "0=全部条目都解析播放链接（吐槽零成本；agedm 走浏览器，受 play_link_browser_items 限制）。",
+                            "default":  0
+                        },
+    "play_link_browser_items":  {
+                                    "type":  "int",
+                                    "description":  "用无头浏览器搜的条数",
+                                    "hint":  "前 N 部会用 Chromium 搜 agedm/girigiri（每部约 6~8 秒，并发执行）；其余只给 AkiAnime + tvtfun 直链。0=关浏览器。",
+                                    "default":  4
+                                },
+    "merge_scope":  {
+                        "type":  "string",
+                        "description":  "合并范围",
+                        "hint":  "today=只合并今天的 bgm + 吐槽今日更新（默认，每日推送用）；week=bgm 整周 + 吐槽整周去重（适合看全集，条目多）。",
+                        "default":  "today",
+                        "options":  [
+                                        "today",
+                                        "week"
+                                    ]
+                    },
+    "week_covers":  {
+                        "type":  "int",
+                        "description":  "本周新番带图数量",
+                        "hint":  "0=纯文字（默认，避免 132 部刷出几十条图片）；6=只给第一条带 6 张封面。",
+                        "default":  0
+                    },
+    "play_order":  {
+                       "type":  "string",
+                       "description":  "播放链接优先级",
+                       "hint":  "逗号分隔，越前越优先。可选值：tucao agedm akianime tvtfun girigiri acfun bilibili。留空=默认顺序。",
+                       "default":  ""
+                   }
+}

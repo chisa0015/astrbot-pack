@@ -1,0 +1,8 @@
+name: astrbot_plugin_zz_bangumi
+display_name: 新番监控
+short_desc: 吐槽弹幕网每周番组表 / 今日更新，支持每日定时推送
+desc: 命令 新番（本周番组表，可带条数）/ 今天新番（今日更新列表）。配置 push_enabled + push_time + push_targets 后，每天定时把当天更新推送到指定会话。
+version: 1.0.0
+author: yesha
+repo: ""
+astrbot_version: ">=4.17.0"

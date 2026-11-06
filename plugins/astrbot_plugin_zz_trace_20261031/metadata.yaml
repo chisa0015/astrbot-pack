@@ -1,6 +1,0 @@
-name: astrbot_plugin_zz_trace
-display_name: 反查找鸡
-desc: 回复图片反查出处与画师/账号（SauceNAO 双索引 → Google Lens → IQDB）
-version: v1.1.0
-author: 鲸鱼娘
-repo: ""

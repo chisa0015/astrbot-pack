@@ -1,0 +1,42 @@
+﻿{
+    "api_base":  {
+                     "description":  "本地生图 API（OpenAI 兼容 /v1/images/generations）",
+                     "type":  "string",
+                     "default":  "http://127.0.0.1:9868"
+                 },
+    "keywords":  {
+                     "description":  "触发词（逗号分隔）",
+                     "type":  "string",
+                     "default":  "生图,画图,出图,绘图,画一张"
+                 },
+    "size":  {
+                 "description":  "出图尺寸 WxH",
+                 "type":  "string",
+                 "default":  "768x1024"
+             },
+    "cooldown_sec":  {
+                         "description":  "同一会话冷却秒数（生图很吃显卡）",
+                         "type":  "int",
+                         "default":  15
+                     },
+    "timeout_sec":  {
+                        "description":  "单次生图超时秒数",
+                        "type":  "int",
+                        "default":  240
+                    },
+    "hires":  {
+                  "description":  "两段式精修（手指细节靠它）",
+                  "default":  true,
+                  "type":  "bool"
+              },
+    "img2img_strength":  {
+                             "description":  "图生图重绘强度 0.3~0.75（小=保形，大=大改）",
+                             "default":  0.55,
+                             "type":  "float"
+                         },
+    "proxy":  {
+                  "description":  "下载参考图用的代理",
+                  "default":  "http://127.0.0.1:7890",
+                  "type":  "string"
+              }
+}

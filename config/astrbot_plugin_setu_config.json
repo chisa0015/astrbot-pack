@@ -1,0 +1,51 @@
+{
+  "setu_general": {
+    "api_type": "lolicon",
+    "multi_api_strategy": "round_robin",
+    "content_mode": "mix",
+    "max_count": 5,
+    "max_replenish_rounds": 3,
+    "tag_alias_templates": []
+  },
+  "api": {
+    "provider_overrides": [],
+    "custom_api_configs": []
+  },
+  "delivery": {
+    "send_mode": "auto",
+    "doujinshi_send_mode": "pdf",
+    "doujinshi_max_page": 0,
+    "r18_docx_mode": true,
+    "auto_revoke_scope": "none",
+    "auto_revoke_targets": [
+      "doujinshi"
+    ],
+    "auto_revoke_delay": 30,
+    "platform_transports": [],
+    "compress_enabled": false,
+    "compress_max_mb": 4
+  },
+  "html_card": {
+    "strategy": "fallback",
+    "card_padding": 6,
+    "card_gap": 6
+  },
+  "fortune": {
+    "enabled": false,
+    "api_type": "inherit",
+    "tags": "",
+    "content_mode": "r18",
+    "allow_user_refresh": false,
+    "auto_refresh": true
+  },
+  "cache": {
+    "enabled": true,
+    "ttl_hours": 2,
+    "max_items": 200,
+    "cleanup_on_start": true
+  },
+  "messages": {
+    "message_overrides": []
+  },
+  "doujinshi_source": "joyacg"
+}

@@ -1,0 +1,10 @@
+﻿{
+  "api_base": "http://127.0.0.1:9868",
+  "keywords": "生图,画图,出图,绘图,画一张",
+  "size": "768x1024",
+  "cooldown_sec": 15,
+  "timeout_sec": 240,
+  "hires": true,
+  "img2img_strength": 0.55,
+  "proxy": "http://127.0.0.1:7890"
+}

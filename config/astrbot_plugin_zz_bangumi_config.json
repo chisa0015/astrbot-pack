@@ -1,0 +1,19 @@
+{
+  "max_items": 0,
+  "push_enabled": true,
+  "push_time": "20:00",
+  "push_targets": [
+    "owner",
+    "aiocqhttp:GroupMessage:996780016",
+    "aiocqhttp:GroupMessage:820569056",
+    "aiocqhttp:GroupMessage:591226146"
+  ],
+  "cover_count": 10,
+  "batch_size": 10,
+  "source": "merged",
+  "play_link_items": 0,
+  "play_link_browser_items": 8,
+  "merge_scope": "today",
+  "week_covers": 0,
+  "play_order": ""
+}

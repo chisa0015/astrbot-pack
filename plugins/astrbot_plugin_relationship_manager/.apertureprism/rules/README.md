@@ -1,0 +1,1 @@
+https://github.com/BB0813/astrbot-plugin-dev/blob/main/docs%2Fastrbot-plugin-development.md

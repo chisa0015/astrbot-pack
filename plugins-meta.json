@@ -1,0 +1,234 @@
+[
+  {
+    "dir": "astrbot_plugin_bilibili_ai_bot",
+    "name": "astrbot_plugin_bilibili_ai_bot",
+    "author": "chenluQwQ,claude",
+    "version": "1.7.2",
+    "repo": "https://github.com/chenluQwQ/astrbot_plugin_bilibili_ai_bot",
+    "desc": "B站评论/私信/直播弹幕自动回复、好感度系统、语义记忆、主动看视频、动态发布、联网查询"
+  },
+  {
+    "dir": "astrbot_plugin_bug_companion",
+    "name": "astrbot_plugin_bug_companion",
+    "author": "menglimi",
+    "version": "0.3.5",
+    "repo": "https://github.com/menglimi/astrbot_plugin_bug_companion",
+    "desc": "为开发者群提供问题收集、人工审批、待办跟踪、仓库播报和可靠知识答疑。"
+  },
+  {
+    "dir": "astrbot_plugin_content_companion",
+    "name": "astrbot_plugin_content_companion",
+    "author": "menglimi",
+    "version": "0.2.2",
+    "repo": "https://github.com/menglimi/astrbot_plugin_content_companion",
+    "desc": "独立创作与作品管理扩展。"
+  },
+  {
+    "dir": "astrbot_plugin_custom_menu",
+    "name": "astrbot_plugin_custom_menu",
+    "author": "shskjw",
+    "version": "1.9.1 # 插件版本号。格式：v1.1.1 或者 v1.1",
+    "repo": "https://github.com/shskjw/astrbot_plugin_custom_menu",
+    "desc": "一个web菜单在线diy插件"
+  },
+  {
+    "dir": "astrbot_plugin_image_companion",
+    "name": "astrbot_plugin_image_companion",
+    "author": "menglimi",
+    "version": "0.4.5",
+    "repo": "https://github.com/menglimi/astrbot_plugin_image_companion",
+    "desc": "陪伴插件的生图、改图、参考图库与多后端扩展。"
+  },
+  {
+    "dir": "astrbot_plugin_master_aware",
+    "name": "astrbot_plugin_master_aware",
+    "author": "大肥鱼",
+    "version": "4.2.2",
+    "repo": "https://github.com/QuanWander/astrbot_plugin_master_aware",
+    "desc": ">-"
+  },
+  {
+    "dir": "astrbot_plugin_memewiki",
+    "name": "astrbot_plugin_memewiki",
+    "author": "local",
+    "version": "1.6.0",
+    "repo": "https://cnmeme.wiki",
+    "desc": "查梗：先查本地全量字典（毫秒级），未命中回落 cnmeme.wiki 公开 API；/梗 指令可出图片卡片，支持每天自动同步。"
+  },
+  {
+    "dir": "astrbot_plugin_memory_companion",
+    "name": "astrbot_plugin_memory_companion",
+    "author": "menglimi",
+    "version": "1.10.5",
+    "repo": "https://github.com/menglimi/astrbot_plugin_memory_companion",
+    "desc": "为 AstrBot 提供主链记忆注入、历史聊天整理导入、连续对话记忆、陪伴插件协同、主动记忆/回忆工具、知识图谱、权限边界、自我时间线、自然衰减、迁移导出和成本诊断。"
+  },
+  {
+    "dir": "astrbot_plugin_persona_canvas",
+    "name": "astrbot_plugin_persona_canvas",
+    "author": "iownmmiku",
+    "version": "0.5.14",
+    "repo": "https://github.com/iownmmiku/astrbot_plugin_persona_canvas",
+    "desc": ">-"
+  },
+  {
+    "dir": "astrbot_plugin_pokepro",
+    "name": "astrbot_plugin_pokepro",
+    "author": "Zhalslar",
+    "version": "v2.1.2",
+    "repo": "https://github.com/Zhalslar/astrbot_plugin_pokepro",
+    "desc": "【专业的戳一戳插件】支持触发（反戳：LLM：face：图库：语音：禁言：命令），戳@某人，跟戳"
+  },
+  {
+    "dir": "astrbot_plugin_private_companion",
+    "name": "astrbot_plugin_private_companion",
+    "author": "menglimi",
+    "version": "6.5.6",
+    "repo": "https://github.com/menglimi/astrbot_plugin_private_companion",
+    "desc": "可独立运行的 AstrBot 陪伴核心；记忆核心缺失时相关能力降级，可选扩展缺失时对应功能关闭。"
+  },
+  {
+    "dir": "astrbot_plugin_reality_companion",
+    "name": "astrbot_plugin_reality_companion",
+    "author": "menglimi",
+    "version": "0.4.0",
+    "repo": "https://github.com/menglimi/astrbot_plugin_reality_companion",
+    "desc": "让 Bot 在明确授权和任务边界内通过米家设备、本机音频、摄像头单帧、Android 移动端和现实提醒来到用户身边。"
+  },
+  {
+    "dir": "astrbot_plugin_relationship_manager",
+    "name": "astrbot_plugin_relationship_manager",
+    "author": "mjy1113451",
+    "version": "v5.2.14",
+    "repo": "https://github.com/mjy1113451/bot_responsible",
+    "desc": "支持加好友/加群/处理好友申请/修改好友备注/修改bot的qq昵称/处理好友申请/处理群申请/抽查群或好友聊天记录/拉黑好友/退群/改头像和昵称/解封(黑名单中好友)/拉黑群/解封群(黑名单中群)"
+  },
+  {
+    "dir": "astrbot_plugin_rollpig_plus",
+    "name": "astrbot_plugin_rollpig_plus",
+    "author": "casama233",
+    "version": "3.11.11",
+    "repo": "https://github.com/casama233/astrbot_plugin_rollpig",
+    "desc": "基於 AstrBot RollPig 持續維護並擴展；部分後續功能參考或移植自 Felis2026/nonebot-plugin-rollpig-plus，來源與授權詳見 ATTRIBUTION.md"
+  },
+  {
+    "dir": "astrbot_plugin_screen_companion",
+    "name": "astrbot_plugin_screen_companion",
+    "author": "menglimi",
+    "version": "3.3.1",
+    "repo": "https://github.com/menglimi/astrbot_plugin_screen_companion",
+    "desc": ""
+  },
+  {
+    "dir": "astrbot_plugin_setu",
+    "name": "astrbot_plugin_setu",
+    "author": "FlanChanXwO",
+    "version": "v2.2.0",
+    "repo": "https://github.com/FlanChanXwO/astrbot_plugin_setu",
+    "desc": "随机福利图与随机本子文件插件，支持标签与数量、图片分级控制，以及 PDF/ZIP 两种本子发送格式。"
+  },
+  {
+    "dir": "astrbot_plugin_together_companion",
+    "name": "astrbot_plugin_together_companion",
+    "author": "menglimi",
+    "version": "0.8.4",
+    "repo": "https://github.com/menglimi/astrbot_plugin_together_companion",
+    "desc": "和 Bot 语音或视频通话、一起看视频，或结合可选屏幕伙伴进行工作协同，并延续现有陪伴人格与生活状态。"
+  },
+  {
+    "dir": "astrbot_plugin_tts_rvc",
+    "name": "astrbot_plugin_tts_rvc",
+    "author": "cyrene",
+    "version": "1.1.0",
+    "repo": "https://github.com/kuqiwang/astrbot_plugin_tts_rvc",
+    "desc": "|"
+  },
+  {
+    "dir": "astrbot_plugin_zz_bangumi",
+    "name": "astrbot_plugin_zz_bangumi",
+    "author": "yesha",
+    "version": "1.0.0",
+    "repo": "",
+    "desc": "命令 新番（本周番组表，可带条数）/ 今天新番（今日更新列表）。配置 push_enabled + push_time + push_targets 后，每天定时把当天更新推送到指定会话。"
+  },
+  {
+    "dir": "astrbot_plugin_zz_cosplay",
+    "name": "astrbot_plugin_zz_cosplay",
+    "author": "yesha",
+    "version": "1.1.0",
+    "repo": "",
+    "desc": "命令 cos / 随机cos / 来张cos / cos图 [1-5] 抓 cosplay8 图集；命令里带 r18 则走绅士会所。图片先下载到本地再以图片消息发送，网络走“本地代理优先、直连兜底”。"
+  },
+  {
+    "dir": "astrbot_plugin_zz_draw",
+    "name": "astrbot_plugin_zz_draw",
+    "author": "夜煞",
+    "version": "v1.1.0",
+    "repo": "",
+    "desc": "生图/画图=txt2img，带图或说「图生图/改图/重绘」=img2img；本地 ComfyUI，两段式精修（手指细节）+ 手部加权词"
+  },
+  {
+    "dir": "astrbot_plugin_zz_fortune",
+    "name": "astrbot_plugin_zz_fortune",
+    "author": "yesha",
+    "version": "1.0.0",
+    "repo": "",
+    "desc": "命令 运势卡 / 抽运势 / 今日运势卡 [名字]。渲染 900×1440 图片：随机二次元壁纸、吉凶大字、五星制、爱情/事业/学业/财运/健康五项指数、宜忌、幸运色/数字/开运物。"
+  },
+  {
+    "dir": "astrbot_plugin_zz_hanime",
+    "name": "astrbot_plugin_zz_hanime",
+    "author": "yesha",
+    "version": "1.0.0",
+    "repo": "",
+    "desc": "命令 里番 [N]、随机里番 [N]、里番新作 [N]、里番 搜索 关键词。配置 push_enabled + push_time + push_targets + push_count 后，每天定时推送最新上市前 N 部（带封面）。站点需代理访问。"
+  },
+  {
+    "dir": "astrbot_plugin_zz_ja_lock",
+    "name": "astrbot_plugin_zz_ja_lock",
+    "author": "yesha",
+    "version": "1.2.0",
+    "repo": "",
+    "desc": "在 on_llm_request 末尾按会话类型注入语言规则：FriendMessage 且发送者在白名单时强制日语；群聊与非白名单私聊不注入，保持模型默认中文。"
+  },
+  {
+    "dir": "astrbot_plugin_zz_jm",
+    "name": "astrbot_plugin_zz_jm",
+    "author": "鲸鱼娘",
+    "version": "v1.0.0",
+    "repo": "",
+    "desc": "JM 漫画下载并转成 PDF 发送"
+  },
+  {
+    "dir": "astrbot_plugin_zz_novel",
+    "name": "astrbot_plugin_zz_novel",
+    "author": "yesha",
+    "version": "2.0.0",
+    "repo": "",
+    "desc": "命令 小说 / 随机小说 / 来本小说 / 看小说 [源] [章节数]；源可选 linovel（默认，linovel.net）或 wenku8（文库8）。每次随机一本书、随机 N 章（默认 3，最多 10），用 reportlab + 微软雅黑排版成 A5 PDF（内嵌字体、可选中文字），以文件消息发送。"
+  },
+  {
+    "dir": "astrbot_plugin_zz_setu_auto",
+    "name": "astrbot_plugin_zz_setu_auto",
+    "author": "夜煞",
+    "version": "v1.0.0",
+    "repo": "",
+    "desc": "消息里出现「色图/涩图/瑟图」就自动丢一张；带冷却、可限 R18、不抢别的命令"
+  },
+  {
+    "dir": "astrbot_plugin_zz_yuyu",
+    "name": "astrbot_plugin_zz_yuyu",
+    "author": "夜煞",
+    "version": "v1.0.0",
+    "repo": "",
+    "desc": "反向图搜 · 谷歌 Lens 认人 + Yandex 找原帖；真人照片走 Lens，Yandex 补位与给出处"
+  },
+  {
+    "dir": "meme_manager",
+    "name": "meme_manager",
+    "author": "anka",
+    "version": "5.2.11",
+    "repo": "https://github.com/anka-afk/astrbot_plugin_meme_manager",
+    "desc": ">-"
+  }
+]

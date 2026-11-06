@@ -1,0 +1,3785 @@
+﻿import json
+import re
+import asyncio
+import time
+import uuid
+from collections import deque
+from pathlib import Path
+from datetime import datetime, timedelta
+from typing import Any, Deque, Dict, List, Optional, Set, Tuple
+
+from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.event.filter import EventMessageType
+from astrbot.api.platform import MessageType
+from astrbot.api.star import Context, Star, register
+from astrbot.api import logger
+
+# 尝试导入 AiocqhttpMessageEvent（用于类型提示）
+try:
+    from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
+        AiocqhttpMessageEvent,
+    )
+except ImportError:
+    AiocqhttpMessageEvent = None
+
+# 导入扩展功能（混淆模块）
+try:
+    from .pkg import ExpansionHandle
+except ImportError:
+    try:
+        from pkg import ExpansionHandle
+    except ImportError:
+        ExpansionHandle = None
+        logger.warning("expansion 模块未找到，加好友/加群功能将不可用")
+
+
+@register(
+    "astrbot_plugin_relationship_manager",
+    "mjy1113451",
+    "AstrBot 关系管理插件",
+    "5.2.14",
+    "https://github.com/mjy1113451/bot_responsible",
+)
+class RelationshipManager(Star):
+
+    # OneBot v11 CQ 码
+    _CQ_REPLY_RE = re.compile(r"\[CQ:reply,id=(-?\d+)\]")
+    # OneBot v12 / 标准 reply 结构匹配
+    _MSG_ID_RE = re.compile(r'"message_id"\s*:\s*"?(-?\d+)"?')
+    _REPLY_ID_KEYS = ("id", "message_id", "messageId", "msg_id", "msgId")
+    _REPLY_CONTAINER_KEYS = ("reply", "source", "quote", "message_reference")
+    _REPLY_TYPE_NAMES = ("reply", "source", "quote")
+
+    # 待处理请求过期时间（天）
+    PENDING_TTL_DAYS = 7
+
+    def __init__(self, context: Context):
+        super().__init__(context)
+
+        config = self.context.get_config()
+        self.data_dir = Path(
+            config.get("data_path", "data")
+        ) / "plugins" / "astrbot_plugin_relationship_manager"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+
+        self.bl_file = self.data_dir / "blacklist.json"
+        self.pd_file = self.data_dir / "pending.json"
+
+        self.blacklist: Dict[str, dict] = self._load(self.bl_file, {})
+        self.pending: Dict[str, dict] = self._load(self.pd_file, {})
+        self._migrate_blacklist()
+
+        self.notify_group: Optional[str] = config.get("notify_group", None)
+        self._notify_qqs: List[str] = []
+        raw_notify_qqs = config.get("notify_qq", [])
+        if isinstance(raw_notify_qqs, str):
+            raw_notify_qqs = [raw_notify_qqs]
+        if isinstance(raw_notify_qqs, list):
+            for item in raw_notify_qqs:
+                if item is None:
+                    continue
+                text = str(item).strip()
+                if not text:
+                    continue
+                self._notify_qqs.append(text)
+        raw_history_count = config.get("ban_forward_history_count", 20)
+        try:
+            if raw_history_count is None or str(raw_history_count).strip() == "":
+                raw_history_count = 20
+            self.ban_forward_history_count = max(0, min(100, int(raw_history_count)))
+        except Exception:
+            self.ban_forward_history_count = 20
+        self._group_message_history: Dict[str, Deque[dict]] = {}
+        self._private_message_history: Dict[str, Deque[dict]] = {}
+        self._self_id: Optional[str] = None
+        self._self_nickname: Optional[str] = None
+        # issue #63: 出站/LLM 回复会被多个钩子重复捕获（_api 钩子、on_decorating_result、
+        # on_llm_response），用短 TTL 内容指纹去重，避免同一条 bot 发言在禁言转发记录里重复出现。
+        # 只缓存纯文本（去重键按文本计算），图片/表情等占位内容不参与去重。
+        self._outbound_cache_dedup: Deque[Tuple[str, float]] = deque(maxlen=128)
+        self._lock = asyncio.Lock()
+        self._patch_astrbot_message_session_id()
+        self._cleanup_pending()
+        logger.info(
+            "关系管理插件初始化完成 v5.2.14: data_dir=%s, pending_file=%s, pending_count=%s",
+            self.data_dir,
+            self.pd_file,
+            len(self.pending),
+        )
+
+    # ───────── 持久化 ─────────
+
+    @staticmethod
+    def _patch_astrbot_message_session_id():
+        """
+        SnowLuma/OneBot request events may be wrapped as AstrBotMessage without
+        a session_id. AstrBot may access it before plugin code runs, so patch
+        the message class once to give request/notice wrappers a safe default.
+        """
+        try:
+            from astrbot.core.platform.astrbot_message import AstrBotMessage
+        except Exception as e:
+            logger.warning(f"无法加载 AstrBotMessage，跳过 session_id 兼容补丁: {e}")
+            return
+
+        if getattr(AstrBotMessage, "_relationship_manager_session_patch", False):
+            return
+
+        original_init = AstrBotMessage.__init__
+
+        def patched_init(self, *args, **kwargs):
+            original_init(self, *args, **kwargs)
+            if getattr(self, "session_id", None):
+                return
+            raw = getattr(self, "raw_message", None)
+            if isinstance(raw, dict):
+                group_id = raw.get("group_id")
+                user_id = raw.get("user_id")
+                if group_id:
+                    self.session_id = str(group_id)
+                    return
+                if user_id:
+                    self.session_id = str(user_id)
+                    return
+            self.session_id = "unknown_session"
+
+        AstrBotMessage.__init__ = patched_init
+        AstrBotMessage._relationship_manager_session_patch = True
+        logger.info("已启用 SnowLuma/OneBot request 事件 session_id 兼容补丁")
+
+    @staticmethod
+    def _load(path: Path, default):
+        if not path.exists():
+            return default
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"读取 {path.name} 失败: {e}")
+            return default
+
+    def _save(self, path: Path, data):
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"保存 {path.name} 失败: {e}")
+
+    def _migrate_blacklist(self):
+        """
+        修复1: 重建字典代替就地修改，避免迭代时修改字典导致的跳跃问题
+        修复2: 同时迁移顶层 group_blacklist（如果它是 dict 而非嵌套在 group_blacklist key 下）
+        """
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        changed = False
+
+        # 快照当前条目（包含 group_blacklist key 本身）
+        entries = list(self.blacklist.items())
+        new_blacklist: Dict[str, dict] = {}
+
+        for uid, val in entries:
+            # 跳过元数据 key
+            if uid == "group_blacklist":
+                # group_blacklist 如果是 dict（而不是 {"group_blacklist": {...}} 嵌套），
+                # 说明旧版格式没有外层包装，需要规范化
+                if isinstance(val, dict):
+                    new_blacklist[uid] = val
+                continue
+
+            if isinstance(val, str):
+                # 字符串 → 完整 dict
+                new_blacklist[uid] = dict(
+                    time=now, block_msg=True, block_friend=True, block_group_invite=True
+                )
+                changed = True
+            elif isinstance(val, dict):
+                # dict 中移除废弃的 reason 字段
+                if "reason" in val:
+                    val.pop("reason")
+                    changed = True
+                new_blacklist[uid] = val
+            else:
+                new_blacklist[uid] = val
+
+        # 检查顶层是否有游离的 group_blacklist entry（修复2）
+        # 旧版只有在 value 明确带群特征时才迁移，避免把普通用户黑名单误判成群黑名单
+        to_migrate_groups: Dict[str, dict] = {}
+        for uid, val in list(entries):
+            if uid == "group_blacklist":
+                continue
+            if not self._valid_gid(uid):
+                continue
+
+            # 仅迁移带明显群信息的旧条目；字符串值没有足够信息，保守保留为用户黑名单
+            if isinstance(val, dict) and (
+                "group_name" in val or "group_id" in val or str(val.get("type", "")).lower() == "group"
+            ):
+                to_migrate_groups[uid] = {"time": val.get("time", now), "source": "migrated"}
+                changed = True
+
+        if to_migrate_groups:
+            existing = new_blacklist.get("group_blacklist", {})
+            for gid, ginfo in to_migrate_groups.items():
+                if gid not in existing:
+                    existing[gid] = ginfo
+            new_blacklist["group_blacklist"] = existing
+            changed = True
+
+        if changed:
+            self.blacklist = new_blacklist
+            self._save(self.bl_file, self.blacklist)
+
+    # ───────── 工具 ─────────
+
+    def _is_admin(self, event: AstrMessageEvent) -> bool:
+        """使用 AstrBot 内置的管理员检测"""
+        try:
+            return event.is_admin()
+        except Exception as e:
+            logger.error(f"管理员鉴权异常: {e}")
+        return False
+
+    def _blocked(self, uid: str, kind: str = "all") -> bool:
+        if uid not in self.blacklist:
+            return False
+        if kind == "all":
+            return True
+        return self.blacklist[uid].get(f"block_{kind}", True)
+
+    def _sender_blocked(self, event: AstrMessageEvent) -> bool:
+        try:
+            uid = str(event.get_sender_id())
+            return uid and self._blocked(uid, "msg")
+        except Exception:
+            return False
+
+    @staticmethod
+    def _ids(text: str) -> List[str]:
+        return re.findall(r"\b(\d{5,12})\b", text)
+
+    @classmethod
+    def _valid_uid(cls, uid: str) -> bool:
+        return bool(re.fullmatch(r"\d{5,12}", uid))
+
+    @classmethod
+    def _valid_gid(cls, gid: str) -> bool:
+        return bool(re.fullmatch(r"\d{5,12}", gid))
+
+    def _get_admins(self) -> List[str]:
+        """获取管理员列表"""
+        try:
+            config = self.context.get_config()
+            return [str(a) for a in config.get("admins_id", [])]
+        except Exception as e:
+            logger.error(f"获取管理员列表异常: {e}")
+        return []
+
+    async def _add_to_blacklist(self, uid: str):
+        """
+        修复3: 添加锁保护，确保线程/协程安全
+        """
+        if not uid:
+            return
+        async with self._lock:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if uid in self.blacklist and isinstance(self.blacklist[uid], dict):
+                self.blacklist[uid]["time"] = now
+                self.blacklist[uid]["block_msg"] = True
+                self.blacklist[uid]["block_friend"] = True
+                self.blacklist[uid]["block_group_invite"] = True
+            else:
+                self.blacklist[uid] = dict(
+                    time=now, block_msg=True, block_friend=True, block_group_invite=True
+                )
+            self._save(self.bl_file, self.blacklist)
+
+    async def _api(self, name: str, event: AstrMessageEvent = None, **kw) -> Any:
+        """调用 OneBot API"""
+        # issue #56: bot 自己发群消息时，缓存到禁言转发上下文，
+        # 这样禁言后合并转发能看到 bot 自己的发言，便于 bot 主复盘禁言原因。
+        if name == "send_group_msg":
+            try:
+                gid = kw.get("group_id")
+                if gid is not None:
+                    self_id = await self._resolve_self_id(event)
+                    self_nick = await self._resolve_self_nickname(event)
+                    self._cache_self_group_message(
+                        gid,
+                        kw.get("message"),
+                        self_id=self_id,
+                        self_nickname=self_nick,
+                    )
+            except Exception as e:
+                logger.debug(f"缓存 bot 自身群消息失败: {e}")
+        try:
+            # 方式1: 通过 event.bot 直接获取客户端（推荐）
+            if event and hasattr(event, 'bot'):
+                client = event.bot
+                if client and hasattr(client, name):
+                    return await getattr(client, name)(**kw)
+                if client and hasattr(client, "api") and hasattr(client.api, "call_action"):
+                    return await client.api.call_action(name, **kw)
+
+            # 方式2: 通过平台获取客户端
+            if event:
+                platform_id = event.get_platform_id()
+                platform = self.context.get_platform_inst(platform_id)
+                if platform:
+                    client = platform.get_client()
+                    if client and hasattr(client, name):
+                        return await getattr(client, name)(**kw)
+                    if client and hasattr(client, "api") and hasattr(client.api, "call_action"):
+                        return await client.api.call_action(name, **kw)
+
+            # 方式3: 遍历所有平台查找支持的客户端
+            for platform in self.context.platform_manager.get_insts():
+                if hasattr(platform, 'get_client'):
+                    client = platform.get_client()
+                    if client and hasattr(client, name):
+                        return await getattr(client, name)(**kw)
+                    if client and hasattr(client, "api") and hasattr(client.api, "call_action"):
+                        return await client.api.call_action(name, **kw)
+
+        except Exception as e:
+            logger.error(f"API {name} 失败: {e}")
+            return {"status": "failed", "retcode": -1, "wording": str(e)}
+        return {"status": "failed", "retcode": -1, "wording": f"API {name} 没有可用客户端"}
+
+    @staticmethod
+    def _api_ok(res: Any) -> bool:
+        if res is None:
+            return True
+        if isinstance(res, list):
+            return True
+        if not isinstance(res, dict):
+            return bool(res)
+        status = str(res.get("status", "")).lower()
+        retcode = res.get("retcode")
+        if status in ("failed", "fail", "error"):
+            return False
+        if retcode not in (None, 0, "0"):
+            return False
+        if status == "ok" or retcode in (0, "0"):
+            return True
+        return "status" not in res and "retcode" not in res
+
+    @staticmethod
+    def _api_failure_text(res: Any) -> str:
+        if isinstance(res, dict):
+            wording = res.get("wording") or res.get("message") or res.get("error")
+            retcode = res.get("retcode")
+            status = res.get("status")
+            parts = []
+            if status:
+                parts.append(f"status={status}")
+            if retcode is not None:
+                parts.append(f"retcode={retcode}")
+            if wording:
+                parts.append(f"wording={wording}")
+            return ", ".join(parts) if parts else str(res)
+        return str(res)
+
+    async def _notify(self, msg: str):
+        """修复7: 委托给 _notify_with_ids，忽略返回值"""
+        await self._notify_with_ids(msg)
+
+    def _collect_message_ids(self, payload: Any) -> List[str]:
+        ids: List[str] = []
+        seen: Set[int] = set()
+
+        def walk(node: Any):
+            if node is None:
+                return
+
+            if isinstance(node, (str, int, float, bool, bytes)):
+                return
+
+            node_id = id(node)
+            if node_id in seen:
+                return
+            seen.add(node_id)
+
+            if isinstance(node, dict):
+                for key in ("message_id", "real_id", "message_seq", "messageId", "realId", "messageSeq"):
+                    normalized = self._normalize_msg_id(node.get(key))
+                    if normalized and normalized not in ids:
+                        ids.append(normalized)
+                for value in node.values():
+                    walk(value)
+                return
+
+            if isinstance(node, (list, tuple, set)):
+                for item in node:
+                    walk(item)
+                return
+
+            for key in ("message_id", "real_id", "message_seq", "messageId", "realId", "messageSeq"):
+                normalized = self._normalize_msg_id(getattr(node, key, None))
+                if normalized and normalized not in ids:
+                    ids.append(normalized)
+
+            for key in ("data", "message", "messages", "raw_message"):
+                walk(getattr(node, key, None))
+
+        walk(payload)
+        return ids
+
+    async def _notify_with_ids(self, msg: str) -> List[str]:
+        """发送通知消息"""
+        ids = []
+        try:
+            # 尝试获取客户端
+            client = None
+            try:
+                for platform in self.context.platform_manager.get_insts():
+                    if hasattr(platform, 'get_client'):
+                        client = platform.get_client()
+                        if client:
+                            break
+            except Exception:
+                pass
+
+            # 收集本次需要私聊发送的目标 QQ 号 (issue #46)
+            # 优先级: 配置 notify_qq > admins_id
+            private_targets: List[str] = []
+            for q in self._notify_qqs:
+                if q and q not in private_targets:
+                    private_targets.append(q)
+            for aid in self._get_admins():
+                if aid and aid not in private_targets:
+                    private_targets.append(aid)
+
+            if client:
+                # 使用客户端直接发送
+                if self.notify_group:
+                    # issue #56: 缓存 bot 发到 notify_group 的群消息，
+                    # 这样若 bot 被该群禁言，仍能看到最近自身发言。
+                    # 先尝试 resolve self_id/self_nickname（event=None 时走 API 兜底）
+                    await self._resolve_self_id(None)
+                    await self._resolve_self_nickname(None)
+                    self._cache_self_group_message(
+                        self.notify_group, msg, dedup_key=msg,
+                    )
+                    res = await client.send_group_msg(group_id=int(self.notify_group), message=msg)
+                    if res and isinstance(res, dict):
+                        ids.extend(self._collect_message_ids(res))
+                    # 群通知场景下,配置的 notify_qq 仍可同时收到私聊副本
+                    for q in self._notify_qqs:
+                        try:
+                            res = await client.send_private_msg(user_id=int(q), message=msg)
+                            if res and isinstance(res, dict):
+                                ids.extend(self._collect_message_ids(res))
+                        except Exception as e:
+                            logger.warning(f"向 notify_qq {q} 发送私聊副本失败: {e}")
+                else:
+                    for q in private_targets:
+                        try:
+                            res = await client.send_private_msg(user_id=int(q), message=msg)
+                            if res and isinstance(res, dict):
+                                ids.extend(self._collect_message_ids(res))
+                        except Exception as e:
+                            logger.warning(f"向 {q} 发送私聊通知失败: {e}")
+            else:
+                # 回退到 send_message
+                from astrbot.api.message_components import Plain
+                message_chain = [Plain(text=msg)]
+
+                # 获取平台名称
+                platform_name = "aiocqhttp"
+                try:
+                    for platform in self.context.platform_manager.get_insts():
+                        if hasattr(platform, 'meta'):
+                            meta = platform.meta()
+                            if hasattr(meta, 'name'):
+                                platform_name = meta.name
+                                break
+                except Exception:
+                    pass
+
+                if self.notify_group:
+                    session = f"{platform_name}:GroupMessage:{self.notify_group}"
+                    await self.context.send_message(session, message_chain)
+                    for q in self._notify_qqs:
+                        session_q = f"{platform_name}:FriendMessage:{q}"
+                        try:
+                            await self.context.send_message(session_q, message_chain)
+                        except Exception as e:
+                            logger.warning(f"向 notify_qq {q} 发送私聊副本失败: {e}")
+                else:
+                    for q in private_targets:
+                        session_q = f"{platform_name}:FriendMessage:{q}"
+                        try:
+                            await self.context.send_message(session_q, message_chain)
+                        except Exception as e:
+                            logger.warning(f"向 {q} 发送私聊通知失败: {e}")
+        except Exception as e:
+            logger.error(f"发送通知失败: {e}")
+        return list(dict.fromkeys(ids))
+
+    def _get_client(self, event: AstrMessageEvent = None):
+        """获取当前可用 OneBot 客户端。"""
+        try:
+            if event and hasattr(event, 'bot'):
+                client = event.bot
+                if client:
+                    return client
+        except Exception:
+            pass
+        try:
+            if event:
+                platform_id = event.get_platform_id()
+                platform = self.context.get_platform_inst(platform_id)
+                if platform and hasattr(platform, 'get_client'):
+                    client = platform.get_client()
+                    if client:
+                        return client
+        except Exception:
+            pass
+        try:
+            for platform in self.context.platform_manager.get_insts():
+                if hasattr(platform, 'get_client'):
+                    client = platform.get_client()
+                    if client:
+                        return client
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _extract_image_url_from_node(node: Any, seen: Set[int] = None) -> Optional[str]:
+        """从 AstrBot 消息链 / OneBot segment / CQ 码中提取图片 URL 或 file。"""
+        if seen is None:
+            seen = set()
+        if node is None:
+            return None
+        if isinstance(node, (int, float, bool, bytes)):
+            return None
+
+        node_id = id(node)
+        if node_id in seen:
+            return None
+        seen.add(node_id)
+
+        if isinstance(node, str):
+            # OneBot CQ 码: [CQ:image,file=...,url=...]
+            for match in re.finditer(r"\[CQ:image,([^\]]+)\]", node):
+                attrs = {}
+                for part in match.group(1).split(","):
+                    if "=" in part:
+                        key, value = part.split("=", 1)
+                        attrs[key.strip()] = value.strip()
+                img = attrs.get("url") or attrs.get("file")
+                if img:
+                    return img.replace("&amp;", "&")
+            return None
+
+        if isinstance(node, dict):
+            node_type = str(node.get("type", "") or node.get("component_type", "")).lower()
+            data = node.get("data") if isinstance(node.get("data"), dict) else {}
+            if node_type == "image":
+                img = (
+                    data.get("url")
+                    or data.get("file")
+                    or data.get("path")
+                    or node.get("url")
+                    or node.get("file")
+                    or node.get("path")
+                )
+                if img:
+                    return str(img).replace("&amp;", "&")
+            for key in ("chain", "message", "messages", "raw_message", "data", "content", "reply", "source", "quote"):
+                result = RelationshipManager._extract_image_url_from_node(node.get(key), seen)
+                if result:
+                    return result
+            for value in node.values():
+                result = RelationshipManager._extract_image_url_from_node(value, seen)
+                if result:
+                    return result
+            return None
+
+        if isinstance(node, (list, tuple, set)):
+            for item in node:
+                result = RelationshipManager._extract_image_url_from_node(item, seen)
+                if result:
+                    return result
+            return None
+
+        class_name = node.__class__.__name__.lower()
+        component_type = str(getattr(node, "type", "") or getattr(node, "component_type", "")).lower()
+        if "image" in class_name or component_type == "image":
+            for attr in ("url", "file", "path"):
+                img = getattr(node, attr, None)
+                if img:
+                    return str(img).replace("&amp;", "&")
+            data = getattr(node, "data", None)
+            result = RelationshipManager._extract_image_url_from_node(data, seen)
+            if result:
+                return result
+
+        # Reply 组件通常挂 chain; AstrBotMessage / event 挂 message_obj/raw_message 等
+        for attr in (
+            "chain", "message", "messages", "raw_message", "data", "content",
+            "reply", "source", "quote", "message_obj",
+        ):
+            try:
+                result = RelationshipManager._extract_image_url_from_node(getattr(node, attr, None), seen)
+                if result:
+                    return result
+            except Exception:
+                continue
+        return None
+
+    def _extract_image_url_from_event(self, event: AstrMessageEvent) -> Optional[str]:
+        candidates = []
+        for getter in ("get_messages", "get_message"):
+            try:
+                if hasattr(event, getter):
+                    candidates.append(getattr(event, getter)())
+            except Exception:
+                pass
+        candidates.extend([
+            getattr(event, "message_obj", None),
+            getattr(event, "message_str", None),
+            getattr(getattr(event, "message_obj", None), "raw_message", None),
+            event,
+        ])
+        for candidate in candidates:
+            result = self._extract_image_url_from_node(candidate)
+            if result:
+                return result
+        return None
+
+    async def _set_qq_nickname(self, event: AstrMessageEvent, new_name: str) -> Any:
+        """设置 Bot QQ 昵称。
+
+        优先使用 astrbot_plugin_qqprofile 验证可用的 NapCat/aiocqhttp 参数
+        ``nickname=...``;若平台不支持,再回退到旧版 profile_type/profile_value
+        参数形态。
+        """
+        res = await self._api("set_qq_profile", event=event, nickname=new_name)
+        if self._api_ok(res):
+            return res
+        logger.warning("set_qq_profile(nickname=...) 失败,尝试 profile_type/profile_value: %s", res)
+        return await self._api(
+            "set_qq_profile",
+            event=event,
+            profile_type="nickname",
+            profile_value=new_name,
+        )
+
+    def _looks_like_group_message(self, payload: dict) -> bool:
+        post_type = str(payload.get("post_type", "")).lower()
+        message_type = str(payload.get("message_type", "")).lower()
+        return (
+            post_type == "message"
+            and message_type == "group"
+            and bool(payload.get("group_id"))
+            and bool(payload.get("user_id"))
+        )
+
+    def _extract_group_message_payload(self, event: AstrMessageEvent) -> Optional[dict]:
+        return self._extract_event_payload(event, self._looks_like_group_message)
+
+    @staticmethod
+    def _message_content_to_text(message: Any, raw_message: str = "") -> str:
+        if isinstance(raw_message, str) and raw_message:
+            return raw_message
+        if isinstance(message, str):
+            return message
+        if isinstance(message, list):
+            parts = []
+            for seg in message:
+                if isinstance(seg, dict):
+                    seg_type = str(seg.get("type", ""))
+                    data = seg.get("data") or {}
+                    if seg_type == "text":
+                        parts.append(str(data.get("text", "")))
+                    elif seg_type:
+                        parts.append(f"[CQ:{seg_type}]")
+                elif seg is not None:
+                    parts.append(str(seg))
+            return "".join(parts).strip()
+        return str(message or "").strip()
+
+    def _cache_group_message(self, event: AstrMessageEvent):
+        """缓存群聊消息,用于 Bot 被禁言时合并转发禁言前记录。"""
+        if self.ban_forward_history_count <= 0:
+            return
+        raw = self._extract_group_message_payload(event)
+        if not isinstance(raw, dict):
+            return
+        gid = str(raw.get("group_id", "")).strip()
+        uid = str(raw.get("user_id", "")).strip()
+        if not gid or not uid:
+            return
+
+        sender = raw.get("sender") if isinstance(raw.get("sender"), dict) else {}
+        name = (
+            sender.get("card")
+            or sender.get("nickname")
+            or raw.get("sender_name")
+            or raw.get("nickname")
+            or uid
+        )
+        content = self._message_content_to_text(raw.get("message"), raw.get("raw_message", ""))
+        if not content:
+            return
+
+        history = self._group_message_history.get(gid)
+        if history is None or history.maxlen != self.ban_forward_history_count:
+            history = deque(history or [], maxlen=self.ban_forward_history_count)
+            self._group_message_history[gid] = history
+        history.append({
+            "user_id": uid,
+            "name": str(name),
+            "content": content,
+        })
+
+    async def _resolve_self_id(self, event: Optional[AstrMessageEvent]) -> Optional[str]:
+        """从 event 或 get_login_info 解析 bot 自身的 QQ 号。"""
+        if event is not None:
+            try:
+                sid = event.get_self_id()
+            except Exception:
+                sid = None
+            if sid:
+                self._self_id = str(sid)
+                return self._self_id
+        # event 为 None（如 notify_group 路径）或 event 拿不到时，走 API 兜底
+        if self._self_id:
+            return self._self_id
+        try:
+            info = await self._api("get_login_info", event=event)
+            if self._api_ok(info):
+                data = self._api_data(info)
+                if isinstance(data, dict):
+                    uid = data.get("user_id") or data.get("qq") or data.get("uin")
+                    if uid is not None:
+                        self._self_id = str(uid)
+                        return self._self_id
+        except Exception as e:
+            logger.debug(f"get_login_info 解析 bot QQ 号失败: {e}")
+        return self._self_id
+
+    async def _resolve_self_nickname(self, event: Optional[AstrMessageEvent]) -> str:
+        """优先用已缓存昵称，否则尝试通过 get_login_info 读取；回退为 'bot'。"""
+        if self._self_nickname:
+            return self._self_nickname
+        try:
+            info = await self._api("get_login_info", event=event)
+            if self._api_ok(info):
+                data = self._api_data(info)
+                if isinstance(data, dict):
+                    nick = data.get("nickname") or data.get("nick") or data.get("name")
+                    if isinstance(nick, str) and nick:
+                        self._self_nickname = nick
+                        return nick
+        except Exception as e:
+            logger.debug(f"获取 bot 昵称失败: {e}")
+        return "bot"
+
+    def _cache_self_group_message(
+        self,
+        group_id: Any,
+        message: Any,
+        self_id: Optional[str] = None,
+        self_nickname: Optional[str] = None,
+        dedup_key: Optional[str] = None,
+    ):
+        """缓存 bot 自己发出的群消息，用于禁言时合并转发中包含 bot 自身发言 (#56)。
+
+        不会向 _group_message_history 写入其它用户的发言，也不需要走 _extract_group_message_payload。
+        dedup_key: 可选的内容指纹。多个出站钩子会捕获同一条 bot 消息时由调用方传入，
+        相同指纹在 TTL 内只缓存一次 (#63)。
+        """
+        if self.ban_forward_history_count <= 0:
+            return
+        gid = str(group_id or "").strip()
+        if not gid:
+            return
+        # 拿不到 bot 自身 QQ 号时跳过缓存，避免用 "bot" 等字面量污染 user_id 空间
+        uid = str(self_id or "").strip() or (self._self_id or "")
+        if not uid:
+            return
+        content = self._message_content_to_text(message, "")
+        if not content:
+            return
+        if not self._mark_outbound_seen(gid, content, dedup_key):
+            return
+        history = self._group_message_history.get(gid)
+        if history is None or history.maxlen != self.ban_forward_history_count:
+            history = deque(history or [], maxlen=self.ban_forward_history_count)
+            self._group_message_history[gid] = history
+        history.append({
+            "user_id": uid,
+            "name": str(self_nickname or self._self_nickname or "bot"),
+            "content": content,
+        })
+
+    _OUTBOUND_DEDUP_TTL = 10.0
+    """出站消息指纹去重窗口（秒）。覆盖同一条消息被多个钩子先后捕获的时间差。"""
+
+    # 出站消息中的非文本组件占位符（形如 [CQ:at]、[CQ:image]），
+    # 计算去重指纹时剥离，使装饰阶段带占位符的链文本能和 LLM 层捕获的原文对上。
+    _OUTBOUND_PLACEHOLDER_RE = re.compile(r"\[CQ:[a-z0-9_]+\]")
+
+    def _mark_outbound_seen(
+        self, group_id: str, content: str, dedup_key: Optional[str] = None
+    ) -> bool:
+        """记录出站消息指纹。返回 False 表示该消息在 TTL 内已缓存过，应跳过。
+
+        指纹按 "群号 + 内容/去重键" 计算，不同群的相同文本互不干扰。
+        dedup_key 为空时用全文；非空时用调用方提供的指纹（如 LLM 回复文本），
+        这样即使出站钩子拿到的是带占位符的链文本，也能和 LLM 层捕获的原文对上。
+        """
+        body = (str(dedup_key) if dedup_key else content).strip()
+        if not body:
+            return True
+        key = f"{group_id}\n{body}"
+        now = time.time()
+        # 清理过期指纹
+        while self._outbound_cache_dedup and now - self._outbound_cache_dedup[0][1] > self._OUTBOUND_DEDUP_TTL:
+            self._outbound_cache_dedup.popleft()
+        for existing, ts in self._outbound_cache_dedup:
+            if existing == key and now - ts <= self._OUTBOUND_DEDUP_TTL:
+                return False
+        self._outbound_cache_dedup.append((key, now))
+        return True
+
+    def _cache_private_message(self, event: AstrMessageEvent):
+        """缓存私聊消息,用于 /抽查 命令获取最近私聊记录。"""
+        MAX_PRIVATE_HISTORY = 100
+        raw = self._extract_event_payload(
+            event,
+            lambda p: (
+                str(p.get("post_type", "")).lower() == "message"
+                and str(p.get("message_type", "")).lower() == "private"
+                and bool(p.get("user_id"))
+            ),
+        )
+        if not isinstance(raw, dict):
+            return
+        uid = str(raw.get("user_id", "")).strip()
+        if not uid:
+            return
+        sender = raw.get("sender") if isinstance(raw.get("sender"), dict) else {}
+        name = (
+            sender.get("nickname")
+            or raw.get("sender_name")
+            or raw.get("nickname")
+            or uid
+        )
+        content = self._message_content_to_text(raw.get("message"), raw.get("raw_message", ""))
+        if not content:
+            return
+
+        history = self._private_message_history.get(uid)
+        if history is None or history.maxlen != MAX_PRIVATE_HISTORY:
+            history = deque(history or [], maxlen=MAX_PRIVATE_HISTORY)
+            self._private_message_history[uid] = history
+        history.append({
+            "user_id": uid,
+            "name": str(name),
+            "content": content,
+        })
+
+    def _build_forward_nodes(
+        self,
+        history: List[dict],
+        group_id: str,
+        empty_hint: Optional[str] = None,
+    ) -> List[dict]:
+        """
+        构建合并转发节点。
+        节点内容只保留发言正文，不附带消息发送时间。
+        empty_hint: 无记录时的占位文案，默认按"禁言前记录"措辞。
+        """
+        nodes = []
+        for item in history:
+            nodes.append({
+                "type": "node",
+                "data": {
+                    "name": str(item.get("name") or item.get("user_id") or "未知"),
+                    "uin": str(item.get("user_id") or "0"),
+                    "content": str(item.get("content") or ""),
+                },
+            })
+        if not nodes:
+            nodes.append({
+                "type": "node",
+                "data": {
+                    "name": "关系管理插件",
+                    "uin": "0",
+                    "content": empty_hint or f"群 {group_id} 暂无可转发的禁言前聊天记录",
+                },
+            })
+        return nodes
+
+    def _history_to_text(
+        self,
+        history: List[dict],
+        group_id: str,
+        scope: Optional[str] = None,
+    ) -> str:
+        """
+        把聊天记录转成纯文本回退内容，同样不输出消息发送时间。
+        scope: 标题里的范围描述，如 "群 123 禁言前"、"用户 123"。
+        末尾多余空格统一由本方法清洗，避免标题出现连续空格或断词。
+        """
+        scope = (scope or f"群 {group_id} 禁言前").strip()
+        if not history:
+            return f"【{scope} 聊天记录】\n暂无可转发记录"
+        lines = [f"【{scope} 最近 {len(history)} 条聊天记录】"]
+        for item in history:
+            lines.append(
+                f"{item.get('name', item.get('user_id', '未知'))}"
+                f"({item.get('user_id', '未知')}): {item.get('content', '')}"
+            )
+        return "\n".join(lines)
+
+    async def _send_ban_history_forward(self, event: AstrMessageEvent, group_id: str):
+        """发送 Bot 被禁言前的聊天记录合并转发。"""
+        count = self.ban_forward_history_count
+        if count <= 0:
+            return
+        history = list(self._group_message_history.get(str(group_id), []))[-count:]
+        nodes = self._build_forward_nodes(history, str(group_id))
+        fallback_text = self._history_to_text(history, str(group_id))
+        client = self._get_client(event)
+
+        sent = False
+        if client:
+            try:
+                if self.notify_group:
+                    res = await self._api(
+                        "send_group_forward_msg",
+                        event=event,
+                        group_id=int(self.notify_group),
+                        messages=nodes,
+                    )
+                    sent = self._api_ok(res)
+                    if not sent:
+                        logger.warning(f"发送群合并转发失败: {res}")
+                else:
+                    for aid in self._get_admins():
+                        res = await self._api(
+                            "send_private_forward_msg",
+                            event=event,
+                            user_id=int(aid),
+                            messages=nodes,
+                        )
+                        if self._api_ok(res):
+                            sent = True
+                        else:
+                            logger.warning(f"发送私聊合并转发失败: aid={aid}, response={res}")
+            except Exception as e:
+                logger.error(f"发送禁言前合并转发异常: {e}")
+
+        if not sent:
+            await self._notify(
+                f"⚠️ 当前平台不支持合并转发或发送失败,已改为文本摘要:\n{fallback_text}"
+            )
+
+    async def _get_target_history(self, target_id: str, count: int) -> Optional[Tuple[List[dict], bool]]:
+        """
+        获取指定目标 (用户私聊或群聊) 的最近聊天记录。
+        自动检测 target_id 是群号还是用户 QQ 号。
+        返回 (history_list, is_group) 或 None 表示未找到。
+        """
+        # 优先用缓存判断: 在群缓存里找到 → 是群
+        if self.ban_forward_history_count > 0 and target_id in self._group_message_history:
+            return list(self._group_message_history[target_id])[-count:], True
+        # 在私聊缓存里找到 → 是用户
+        if target_id in self._private_message_history:
+            return list(self._private_message_history[target_id])[-count:], False
+        # 缓存里都没有,尝试调 API 确认是否是群号
+        try:
+            for platform in self.context.platform_manager.get_insts():
+                if not hasattr(platform, 'get_client'):
+                    continue
+                client = platform.get_client()
+                if not client:
+                    continue
+                try:
+                    if hasattr(client, 'get_group_info'):
+                        res = await client.get_group_info(group_id=int(target_id))
+                    elif hasattr(client.api, 'call_action'):
+                        res = await client.api.call_action('get_group_info', group_id=int(target_id))
+                    else:
+                        continue
+                    if self._api_ok(res):
+                        return [], True
+                except Exception:
+                    pass
+                break
+        except Exception:
+            pass
+        # 默认当用户处理
+        return [], False
+
+    @staticmethod
+    def _normalize_msg_id(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @staticmethod
+    def _new_request_id() -> str:
+        return uuid.uuid4().hex[:10]
+
+    def _find_dict_in_node(self, node: Any, predicate) -> Optional[dict]:
+        seen: Set[int] = set()
+
+        def walk(current: Any) -> Optional[dict]:
+            if current is None:
+                return None
+
+            if isinstance(current, str):
+                text = current.strip()
+                if text[:1] in ("{", "["):
+                    try:
+                        current = json.loads(text)
+                    except Exception:
+                        return None
+                else:
+                    return None
+
+            if isinstance(current, (int, float, bool, bytes)):
+                return None
+
+            current_id = id(current)
+            if current_id in seen:
+                return None
+            seen.add(current_id)
+
+            if isinstance(current, dict):
+                try:
+                    if predicate(current):
+                        return current
+                except Exception:
+                    pass
+
+                for key in (
+                    "message_obj",
+                    "raw_message",
+                    "message",
+                    "messages",
+                    "content",
+                    "elements",
+                    "segments",
+                    "data",
+                    "payload",
+                    "extra",
+                    "quote",
+                    "source",
+                    "reply",
+                    "message_reference",
+                ):
+                    result = walk(current.get(key))
+                    if result is not None:
+                        return result
+
+                for value in current.values():
+                    result = walk(value)
+                    if result is not None:
+                        return result
+                return None
+
+            if isinstance(current, (list, tuple, set)):
+                for item in current:
+                    result = walk(item)
+                    if result is not None:
+                        return result
+                return None
+
+            for attr in (
+                "message_obj",
+                "raw_message",
+                "message",
+                "messages",
+                "content",
+                "elements",
+                "segments",
+                "data",
+                "payload",
+                "extra",
+                "quote",
+                "source",
+                "reply",
+                "message_reference",
+            ):
+                try:
+                    result = walk(getattr(current, attr, None))
+                    if result is not None:
+                        return result
+                except Exception:
+                    continue
+
+            return None
+
+        return walk(node)
+
+    @staticmethod
+    def _looks_like_friend_request(payload: dict) -> bool:
+        request_type = str(payload.get("request_type", "")).lower()
+        post_type = str(payload.get("post_type", "")).lower()
+        has_flag = bool(payload.get("flag"))
+        has_user = bool(payload.get("user_id"))
+        has_group = bool(payload.get("group_id"))
+        # 必须是 request 事件，避免误匹配普通消息里的字段
+        return (
+            (request_type == "friend" and has_flag and has_user and not has_group)
+            or (post_type == "request" and has_flag and has_user and not has_group)
+        )
+
+    @staticmethod
+    def _looks_like_group_request(payload: dict) -> bool:
+        request_type = str(payload.get("request_type", "")).lower()
+        post_type = str(payload.get("post_type", "")).lower()
+        has_flag = bool(payload.get("flag"))
+        has_group = bool(payload.get("group_id"))
+        # 必须是 request 事件；不要用 has_flag+group+user 宽松匹配，
+        # 否则群员拉人时的各种嵌套字段也会被当成“群邀请”
+        return (
+            (request_type == "group" and has_flag and has_group)
+            or (post_type == "request" and has_flag and has_group)
+        )
+
+    @staticmethod
+    def _looks_like_notice(payload: dict) -> bool:
+        notice_type = str(payload.get("notice_type", "")).lower()
+        post_type = str(payload.get("post_type", "")).lower()
+        return bool(notice_type) or post_type == "notice"
+
+    def _extract_event_payload(self, event: AstrMessageEvent, predicate) -> Optional[dict]:
+        return self._find_dict_in_node(event, predicate)
+
+    def _extract_reply_id_from_text(self, text: str) -> Optional[str]:
+        if not text:
+            return None
+
+        match = self._CQ_REPLY_RE.search(text)
+        if match:
+            return self._normalize_msg_id(match.group(1))
+
+        lower_text = text.lower()
+        if any(name in lower_text for name in self._REPLY_TYPE_NAMES):
+            match = self._MSG_ID_RE.search(text)
+            if match:
+                return self._normalize_msg_id(match.group(1))
+
+        return None
+
+    def _extract_reply_id_from_node(
+        self, node: Any, seen: Set[int], allow_direct_id: bool = False
+    ) -> Optional[str]:
+        if node is None:
+            return None
+
+        if isinstance(node, str):
+            return self._extract_reply_id_from_text(node)
+
+        if isinstance(node, (int, float, bool, bytes)):
+            return None
+
+        node_identity = id(node)
+        if node_identity in seen:
+            return None
+        seen.add(node_identity)
+
+        if isinstance(node, dict):
+            if allow_direct_id:
+                for key in self._REPLY_ID_KEYS:
+                    reply_id = self._normalize_msg_id(node.get(key))
+                    if reply_id:
+                        return reply_id
+
+            node_type = str(node.get("type", "")).lower()
+            if node_type in self._REPLY_TYPE_NAMES:
+                data = node.get("data")
+                if isinstance(data, dict):
+                    for key in self._REPLY_ID_KEYS:
+                        reply_id = self._normalize_msg_id(data.get(key))
+                        if reply_id:
+                            return reply_id
+                for key in self._REPLY_ID_KEYS:
+                    reply_id = self._normalize_msg_id(node.get(key))
+                    if reply_id:
+                        return reply_id
+
+            for key in self._REPLY_CONTAINER_KEYS:
+                if key in node:
+                    reply_id = self._extract_reply_id_from_node(
+                        node.get(key), seen, allow_direct_id=True
+                    )
+                    if reply_id:
+                        return reply_id
+
+            for key in ("message", "messages", "content", "elements", "segments", "data"):
+                if key in node:
+                    reply_id = self._extract_reply_id_from_node(node.get(key), seen)
+                    if reply_id:
+                        return reply_id
+
+            return self._extract_reply_id_from_text(str(node))
+
+        if isinstance(node, (list, tuple, set)):
+            for item in node:
+                reply_id = self._extract_reply_id_from_node(item, seen)
+                if reply_id:
+                    return reply_id
+            return None
+
+        component_type = str(getattr(node, "type", "") or getattr(node, "component_type", "")).lower()
+        class_name = node.__class__.__name__.lower()
+        if component_type in self._REPLY_TYPE_NAMES or any(name in class_name for name in self._REPLY_TYPE_NAMES):
+            for key in self._REPLY_ID_KEYS:
+                reply_id = self._normalize_msg_id(getattr(node, key, None))
+                if reply_id:
+                    return reply_id
+            reply_id = self._extract_reply_id_from_node(
+                getattr(node, "data", None), seen, allow_direct_id=True
+            )
+            if reply_id:
+                return reply_id
+
+        for key in self._REPLY_CONTAINER_KEYS:
+            reply_id = self._extract_reply_id_from_node(
+                getattr(node, key, None), seen, allow_direct_id=True
+            )
+            if reply_id:
+                return reply_id
+
+        for key in ("message", "messages", "content", "elements", "segments", "raw_message", "data"):
+            reply_id = self._extract_reply_id_from_node(getattr(node, key, None), seen)
+            if reply_id:
+                return reply_id
+
+        return self._extract_reply_id_from_text(str(node))
+
+    def _get_reply_id(self, event: AstrMessageEvent) -> Optional[str]:
+        """
+        兼容 AstrBot 组件对象、OneBot array 上报、CQ 码字符串和原始事件 dict 中的引用消息结构。
+        """
+        for candidate in (
+            getattr(event, "message_obj", None),
+            getattr(getattr(event, "message_obj", None), "message", None),
+            getattr(getattr(event, "message_obj", None), "raw_message", None),
+            event,
+        ):
+            try:
+                reply_id = self._extract_reply_id_from_node(candidate, set())
+                if reply_id:
+                    return reply_id
+            except Exception:
+                continue
+        return None
+
+    def _find_flag_by_msg_id(self, msg_id: str) -> Optional[str]:
+        target_msg_id = self._normalize_msg_id(msg_id)
+        if not target_msg_id:
+            return None
+        for flag, info in self.pending.items():
+            notify_ids = {
+                normalized
+                for normalized in (
+                    self._normalize_msg_id(item) for item in info.get("notify_ids", [])
+                )
+                if normalized
+            }
+            if target_msg_id in notify_ids:
+                return flag
+        return None
+
+    def _find_flag_by_request_id(self, request_id: str) -> Optional[str]:
+        target_request_id = self._normalize_msg_id(request_id)
+        if not target_request_id:
+            return None
+        for flag, info in self.pending.items():
+            if self._normalize_msg_id(info.get("request_id")) == target_request_id:
+                return flag
+        return None
+
+    @staticmethod
+    def _api_data(res: Any) -> Any:
+        if isinstance(res, list):
+            return res
+        if not isinstance(res, dict):
+            return None
+        if "data" in res:
+            return res.get("data")
+        return res
+
+    def _api_list(self, res: Any) -> List[dict]:
+        data = self._api_data(res)
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        if isinstance(data, dict):
+            for key in ("requests", "list", "items", "data"):
+                value = data.get(key)
+                if isinstance(value, list):
+                    return [item for item in value if isinstance(item, dict)]
+        return []
+
+    def _find_pending_by_fields(self, fields: List[str]) -> Optional[str]:
+        values = {str(field).strip() for field in fields if str(field or "").strip()}
+        if not values:
+            return None
+        for flag, info in reversed(list(self.pending.items())):
+            known = {
+                str(flag).strip(),
+                str(info.get("request_id", "")).strip(),
+                str(info.get("request_flag", "")).strip(),
+                str(info.get("user_id", "")).strip(),
+                str(info.get("nickname", "")).strip(),
+                str(info.get("group_id", "")).strip(),
+                str(info.get("group_name", "")).strip(),
+                str(info.get("inviter_nickname", "")).strip(),
+                str(info.get("comment", "")).strip(),
+            }
+            if values & known:
+                return flag
+        return None
+
+    def _find_flag_by_notice_text(self, text: str) -> Optional[str]:
+        if not text:
+            return None
+        if "好友申请" not in text and "群邀请" not in text:
+            return None
+
+        candidates = self._extract_pending_candidates_from_text(text)
+        if not candidates:
+            return None
+
+        for flag, info in reversed(list(self.pending.items())):
+            request_id = str(info.get("request_id", "")).strip()
+            values = {
+                str(info.get("user_id", "")).strip(),
+                str(info.get("group_id", "")).strip(),
+                str(info.get("nickname", "")).strip(),
+                str(info.get("inviter_nickname", "")).strip(),
+                str(info.get("group_name", "")).strip(),
+                request_id,
+                str(flag).strip(),
+            }
+            if any(candidate in values for candidate in candidates):
+                return flag
+
+        return None
+
+    async def _sync_snowluma_pending_requests(self, event: AstrMessageEvent = None) -> int:
+        """
+        SnowLuma normal requests arrive as OneBot request events. Some QQ-side
+        filtered requests only appear in SnowLuma's extended list actions; sync
+        those into the same pending table so /同意 /拒绝 can process them by id.
+        """
+        added = 0
+        added += await self._sync_snowluma_doubt_friend_requests(event)
+        added += await self._sync_snowluma_filtered_group_requests(event)
+        return added
+
+    async def _sync_snowluma_doubt_friend_requests(self, event: AstrMessageEvent = None) -> int:
+        res = await self._api("get_doubt_friends_add_request", event=event, count=50)
+        if not self._api_ok(res):
+            logger.info(f"SnowLuma 可疑好友申请列表不可用: response={res}")
+            return 0
+
+        added = 0
+        items = self._api_list(res)
+        if not items:
+            logger.info("SnowLuma 可疑好友申请列表为空")
+            return 0
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            flag = str(
+                item.get("flag")
+                or item.get("uid")
+                or item.get("uin")
+                or ""
+            ).strip()
+            uid = str(item.get("uin") or item.get("uid") or "0").strip()
+            if not flag:
+                continue
+            raw_nick = str(item.get("nick") or item.get("nickname") or "").strip()
+            nick = raw_nick
+            if not nick or nick.lower() in ("null", "none", "0", "-", "未知", "undefined"):
+                try:
+                    sinfo = await self._api(
+                        "get_stranger_info", event=event, user_id=uid
+                    )
+                    if (
+                        self._api_ok(sinfo)
+                        and isinstance(sinfo, dict)
+                        and isinstance(sinfo.get("data"), dict)
+                    ):
+                        nick = str(
+                            sinfo["data"].get("nick")
+                            or sinfo["data"].get("uin")
+                            or ""
+                        ).strip()
+                except Exception as e:
+                    logger.debug(f"查询 QQ 昵称失败: uid={uid}, err={e}")
+                if not nick:
+                    nick = uid or flag
+            comment = str(
+                item.get("msg") or item.get("message") or item.get("reason") or ""
+            ).strip()
+            source = str(item.get("source", "") or "").strip()
+            req_time = item.get("reqTime") or item.get("time")
+
+            async with self._lock:
+                if flag in self.pending:
+                    continue
+                existing = self._find_pending_by_fields([flag, uid, nick, comment])
+                if existing:
+                    continue
+                request_id = self._new_request_id()
+                self.pending[flag] = dict(
+                    type="friend",
+                    user_id=uid or flag,
+                    nickname=nick,
+                    comment=comment,
+                    source=source,
+                    time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    req_time=req_time,
+                    notify_ids=[],
+                    request_id=request_id,
+                    request_flag=flag,
+                    request_type="friend",
+                    request_api="set_doubt_friends_add_request",
+                    snowluma_doubt=True,
+                )
+                self._save(self.pd_file, self.pending)
+                added += 1
+                logger.info(f"已同步 SnowLuma 可疑好友申请: flag={flag}, request_id={request_id}, nick={nick}")
+        return added
+
+    async def _sync_snowluma_filtered_group_requests(self, event: AstrMessageEvent = None) -> int:
+        res = await self._api("get_group_ignored_notifies", event=event)
+        if not self._api_ok(res):
+            logger.info(f"SnowLuma 被过滤入群请求列表不可用: response={res}")
+            return 0
+
+        added = 0
+        items = self._api_list(res)
+        payload = self._api_data(res)
+        if isinstance(payload, dict):
+            extra = []
+            for key in (
+                "invited_requests",
+                "InvitedRequest",
+                "invite_requests",
+                "join_requests",
+                "JoinRequest",
+            ):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    extra.extend([item for item in value if isinstance(item, dict)])
+            if extra:
+                seen = set()
+                merged = []
+                for item in list(items) + extra:
+                    try:
+                        marker = json.dumps(item, sort_keys=True, ensure_ascii=False)
+                    except Exception:
+                        marker = str(item)
+                    if marker in seen:
+                        continue
+                    seen.add(marker)
+                    merged.append(item)
+                items = merged
+        if not items:
+            logger.info("SnowLuma 被过滤入群请求列表为空")
+            return 0
+        for item in items:
+            if item.get("checked") is True:
+                continue
+            flag = str(item.get("flag", "")).strip()
+            gid = str(item.get("group_id", "") or "").strip()
+            uid = str(item.get("requester_uin", "") or item.get("invitor_uin", "") or "0").strip()
+            if not flag or not gid:
+                fallback_parts = [
+                    str(item.get("request_id", "") or item.get("sequence", "")).strip(),
+                    gid,
+                    uid,
+                ]
+                logger.warning(f"SnowLuma 被过滤入群请求缺少处理 flag，尝试用返回字段构造: item={item}")
+                if fallback_parts[0] and gid:
+                    flag = ":".join(part for part in fallback_parts if part)
+                if not flag or not gid:
+                    continue
+            group_name = str(item.get("group_name", "") or gid).strip()
+            inviter_nickname = str(item.get("invitor_nick", "") or uid).strip()
+            comment = str(item.get("message", "") or "").strip()
+
+            async with self._lock:
+                if flag in self.pending:
+                    continue
+                existing = self._find_pending_by_fields([flag, gid, uid, group_name, inviter_nickname, comment])
+                if existing:
+                    continue
+                request_id = self._new_request_id()
+                self.pending[flag] = dict(
+                    type="group",
+                    group_id=gid,
+                    group_name=group_name,
+                    user_id=uid,
+                    inviter_nickname=inviter_nickname,
+                    sub_type="add",
+                    comment=comment,
+                    time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    notify_ids=[],
+                    request_id=request_id,
+                    request_flag=flag,
+                    request_type="group",
+                    request_api="set_group_add_request",
+                    snowluma_filtered=True,
+                )
+                self._save(self.pd_file, self.pending)
+                added += 1
+                logger.info(f"已同步 SnowLuma 被过滤入群请求: flag={flag}, request_id={request_id}, gid={gid}, uid={uid}")
+        return added
+
+    def _find_flag_from_args(self, args: str) -> Optional[str]:
+        text = str(args or "").strip()
+        if not text:
+            return None
+
+        candidates = self._extract_pending_candidates_from_text(text)
+        for candidate in candidates:
+            flag = self._find_flag_by_request_id(candidate)
+            if flag:
+                return flag
+            if candidate in self.pending:
+                return candidate
+        return None
+
+    def _extract_pending_candidates_from_text(self, text: str) -> List[str]:
+        if not text:
+            return []
+
+        candidates: List[str] = []
+
+        for uid in self._ids(text):
+            if uid not in candidates:
+                candidates.append(uid)
+
+        for pattern in (
+            r"flag[:：]\s*([^\n\r]+)",
+            r"编号[:：]\s*([^\n\r]+)",
+            r"QQ号[:：]\s*([^\n\r]+)",
+            r"邀请人QQ[:：]\s*([^\n\r]+)",
+            r"群号[:：]\s*([^\n\r]+)",
+            r"昵称[:：]\s*([^\n\r]+)",
+            r"邀请人昵称[:：]\s*([^\n\r]+)",
+            r"群名称[:：]\s*([^\n\r]+)",
+        ):
+            for match in re.findall(pattern, text):
+                value = str(match).strip()
+                if value and value not in candidates:
+                    candidates.append(value)
+
+        return candidates
+
+    def _find_flag_by_quote_text(self, event: AstrMessageEvent) -> Optional[str]:
+        texts: List[str] = []
+
+        for candidate in (
+            event,
+            getattr(event, "message_obj", None),
+            getattr(getattr(event, "message_obj", None), "message", None),
+            getattr(getattr(event, "message_obj", None), "raw_message", None),
+        ):
+            for text in self._collect_text_fragments(candidate):
+                if text and text not in texts:
+                    texts.append(text)
+
+        try:
+            message_str = str(event.get_message_str() or "")
+            if message_str and message_str not in texts:
+                texts.append(message_str)
+        except Exception:
+            pass
+
+        for text in texts:
+            flag = self._find_flag_by_notice_text(text)
+            if flag:
+                return flag
+
+        return None
+
+    async def _find_flag_by_replied_message(self, event: AstrMessageEvent, reply_id: str) -> Optional[str]:
+        if not reply_id:
+            return None
+
+        texts = await self._collect_replied_message_texts(event, reply_id)
+        for text in texts:
+            flag = self._find_flag_by_notice_text(text)
+            if flag:
+                return flag
+
+        return None
+
+    def _extract_ids_from_notice_like_text(self, text: str) -> List[str]:
+        ids = []
+        for candidate in self._extract_pending_candidates_from_text(text):
+            if self._valid_uid(candidate) and candidate not in ids:
+                ids.append(candidate)
+        return ids
+
+    def _extract_friend_request_from_notice_text(self, text: str) -> Optional[dict]:
+        if not text or "好友申请" not in text:
+            return None
+        ids = self._extract_ids_from_notice_like_text(text)
+        if not ids:
+            return None
+        uid = ids[0]
+        nickname = uid
+        comment = ""
+        nick_match = re.search(r"昵称[:：]\s*([^\n\r]+)", text)
+        if nick_match:
+            nickname = nick_match.group(1).strip() or uid
+        comment_match = re.search(r"验证(?:信息|消息)?[:：]\s*([^\n\r]+)", text)
+        if comment_match:
+            comment = comment_match.group(1).strip()
+        # 从通知文本提取 flag
+        flag_match = re.search(r"flag[:：]\s*([^\n\r]+)", text)
+        request_flag = flag_match.group(1).strip() if flag_match else uid
+        return dict(
+            type="friend",
+            user_id=uid,
+            nickname=nickname,
+            comment=comment,
+            time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            notify_ids=[],
+            request_id=uid,
+            request_flag=request_flag,
+            request_type="friend",
+            request_api="set_friend_add_request",
+            snowluma_direct_uin=True,
+        )
+
+    async def _collect_replied_message_texts(self, event: AstrMessageEvent, reply_id: str) -> List[str]:
+        if not reply_id:
+            return []
+        try:
+            try:
+                res = await self._api("get_msg", event=event, message_id=int(reply_id))
+            except ValueError:
+                res = await self._api("get_msg", event=event, message_id=reply_id)
+        except Exception as e:
+            logger.warning(f"拉取引用消息失败: reply_id={reply_id}, err={e}")
+            return []
+        if not res:
+            logger.warning(f"拉取引用消息无结果: reply_id={reply_id}")
+            return []
+        texts = self._collect_text_fragments(res)
+
+        # 额外提取: 如果 get_msg 的 message 字段是 JSON 字符串，解析并提取文本值
+        data = res.get("data") if isinstance(res, dict) else None
+        if isinstance(data, dict):
+            for key in ("message", "raw_message"):
+                raw = data.get(key)
+                if isinstance(raw, str) and raw.strip()[:1] in ("{", "["):
+                    try:
+                        parsed = json.loads(raw)
+                        for val in self._walk_json_values(parsed):
+                            if isinstance(val, str) and val.strip() and val.strip() not in texts:
+                                texts.append(val.strip())
+                    except Exception:
+                        pass
+        logger.info(f"已拉取引用消息用于匹配: reply_id={reply_id}, text_fragments={len(texts)}")
+        return texts
+
+    def _walk_json_values(self, node: Any):
+        """遍历JSON对象，yield所有字符串值"""
+        if node is None:
+            return
+        if isinstance(node, str):
+            yield node
+            return
+        if isinstance(node, (int, float, bool)):
+            return
+        if isinstance(node, dict):
+            for v in node.values():
+                yield from self._walk_json_values(v)
+            return
+        if isinstance(node, (list, tuple)):
+            for item in node:
+                yield from self._walk_json_values(item)
+
+    def _extract_group_invite_from_notice_text(self, text: str) -> Optional[dict]:
+        if not text or "群邀请" not in text:
+            return None
+
+        logger.debug("解析群邀请通知文本 (前200字): %s", text[:200])
+
+        # 从文本提取关键字段
+        gid = ""
+        uid = ""
+        nickname = ""
+        group_name = ""
+        request_id = ""
+
+        # flag（server flag，用于API调用）
+        m = re.search(r"flag[:：]\s*([^\n\r]+)", text)
+        if m:
+            api_flag = m.group(1).strip()
+        else:
+            api_flag = ""
+            api_flag = ""
+
+        # 编号（内部ID，非server flag）
+        m = re.search(r"编号[:：]\s*([^\n\r]+)", text)
+        if m:
+            request_id = m.group(1).strip()
+
+        # 群号（多种格式）
+        for pattern in [r"群号[:：]\s*(\d{5,12})", r"群号[:：]\s*(\d+)"]:
+            m = re.search(pattern, text)
+            if m:
+                gid = m.group(1).strip()
+                break
+
+        # 如果没有群号字段，从文本中提取所有数字，取第一个合理长度的
+        if not gid:
+            all_nums = re.findall(r"\b(\d{5,15})\b", text)
+            for num in all_nums:
+                if num != uid and num != request_id:
+                    gid = num
+                    break
+
+        # 邀请人QQ（多种格式）
+        for pattern in [r"(?:邀请人QQ|QQ号)[:：]\s*(\d{5,12})", r"(?:邀请人QQ|QQ号)[:：]\s*(\d+)"]:
+            m = re.search(pattern, text)
+            if m:
+                uid = m.group(1).strip()
+                break
+
+        # 如果没有QQ字段，从文本中提取
+        if not uid:
+            all_nums = re.findall(r"\b(\d{5,15})\b", text)
+            for num in all_nums:
+                if num != gid and num != request_id:
+                    uid = num
+                    break
+
+        # 邀请人昵称
+        m = re.search(r"邀请人昵称[:：]\s*([^\n\r]+)", text)
+        if m:
+            nickname = m.group(1).strip()
+
+        # 群名称
+        m = re.search(r"群名称[:：]\s*([^\n\r]+)", text)
+        if m:
+            group_name = m.group(1).strip()
+
+        logger.info(
+            "通知文本解析结果: gid=%s, uid=%s, nickname=%s, group_name=%s, request_id=%s",
+            gid, uid, nickname, group_name, request_id,
+        )
+
+        if not gid and not uid:
+            return None
+
+        # 确定用于API调用的flag：优先用文本提取的flag，否则用gid，否则用uid
+        if not api_flag:
+            api_flag = gid or uid or ""
+
+        return dict(
+            type="group",
+            group_id=gid or "0",
+            group_name=group_name or gid or "未知群",
+            user_id=uid or "0",
+            inviter_nickname=nickname or uid or "未知",
+            sub_type="invite",
+            comment="",
+            time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            notify_ids=[],
+            request_id=request_id or uid or gid,
+            request_flag=api_flag,
+            request_type="group",
+            request_api="set_group_add_request",
+            recovered_from_notice=True,
+        )
+
+    async def _recover_group_request_from_notice(
+        self, event: AstrMessageEvent, reply_id: str = None
+    ) -> Optional[dict]:
+        # 优先从 get_msg 获取原始通知文本（最干净的来源）
+        if reply_id:
+            try:
+                try:
+                    res = await self._api("get_msg", event=event, message_id=int(reply_id))
+                except ValueError:
+                    res = await self._api("get_msg", event=event, message_id=reply_id)
+                if res and isinstance(res, dict):
+                    data = res.get("data")
+                    if isinstance(data, dict):
+                        msg_text = data.get("message", "")
+                        if isinstance(msg_text, str) and "群邀请" in msg_text:
+                            info = self._extract_group_invite_from_notice_text(msg_text)
+                            if info:
+                                logger.info("从 get_msg.message 直接恢复群邀请")
+                                return info
+                        raw_msg = data.get("raw_message", "")
+                        if isinstance(raw_msg, str) and "群邀请" in raw_msg:
+                            info = self._extract_group_invite_from_notice_text(raw_msg)
+                            if info:
+                                logger.info("从 get_msg.raw_message 直接恢复群邀请")
+                                return info
+            except Exception as e:
+                logger.debug(f"从 get_msg 恢复群邀请失败: {e}")
+
+        # 回退: 从事件文本片段中查找
+        texts: List[str] = []
+        for candidate in (
+            event,
+            getattr(event, "message_obj", None),
+            getattr(getattr(event, "message_obj", None), "message", None),
+            getattr(getattr(event, "message_obj", None), "raw_message", None),
+        ):
+            for text in self._collect_text_fragments(candidate):
+                if text and text not in texts:
+                    texts.append(text)
+        if reply_id:
+            for text in await self._collect_replied_message_texts(event, reply_id):
+                if text and text not in texts:
+                    texts.append(text)
+        for text in texts:
+            info = self._extract_group_invite_from_notice_text(text)
+            if info:
+                return info
+        return None
+
+    async def _recover_friend_request_from_notice(
+        self, event: AstrMessageEvent, reply_id: str = None
+    ) -> Optional[dict]:
+        texts: List[str] = []
+        for candidate in (
+            event,
+            getattr(event, "message_obj", None),
+            getattr(getattr(event, "message_obj", None), "message", None),
+            getattr(getattr(event, "message_obj", None), "raw_message", None),
+        ):
+            for text in self._collect_text_fragments(candidate):
+                if text and text not in texts:
+                    texts.append(text)
+        if reply_id:
+            for text in await self._collect_replied_message_texts(event, reply_id):
+                if text and text not in texts:
+                    texts.append(text)
+        for text in texts:
+            info = self._extract_friend_request_from_notice_text(text)
+            if info:
+                return info
+        return None
+
+    def _iter_dicts(self, node: Any):
+        seen: Set[int] = set()
+
+        def walk(current: Any):
+            if current is None:
+                return
+            if isinstance(current, str):
+                stripped = current.strip()
+                if stripped[:1] in ("{", "["):
+                    try:
+                        current = json.loads(stripped)
+                    except Exception:
+                        return
+                else:
+                    return
+            if isinstance(current, (int, float, bool, bytes)):
+                return
+
+            current_id = id(current)
+            if current_id in seen:
+                return
+            seen.add(current_id)
+
+            if isinstance(current, dict):
+                yield current
+                for value in current.values():
+                    yield from walk(value)
+                return
+
+            if isinstance(current, (list, tuple, set)):
+                for item in current:
+                    yield from walk(item)
+
+        yield from walk(node)
+
+    def _collect_text_fragments(self, node: Any) -> List[str]:
+        texts: List[str] = []
+        seen: Set[int] = set()
+
+        def add_text(value: Any):
+            if value is None:
+                return
+            if isinstance(value, bytes):
+                try:
+                    value = value.decode("utf-8", errors="ignore")
+                except Exception:
+                    return
+            if not isinstance(value, str):
+                value = str(value)
+            text = value.strip()
+            if text and text not in texts:
+                texts.append(text)
+
+        def walk(current: Any):
+            if current is None:
+                return
+
+            if isinstance(current, str):
+                add_text(current)
+                stripped = current.strip()
+                if stripped[:1] in ("{", "["):
+                    try:
+                        current = json.loads(stripped)
+                    except Exception:
+                        return
+                else:
+                    return
+
+            if isinstance(current, (int, float, bool, bytes)):
+                if isinstance(current, bytes):
+                    add_text(current)
+                return
+
+            current_id = id(current)
+            if current_id in seen:
+                return
+            seen.add(current_id)
+
+            if isinstance(current, dict):
+                for key in ("text", "content", "summary", "raw_message", "message"):
+                    value = current.get(key)
+                    if isinstance(value, (str, bytes)):
+                        add_text(value)
+                if str(current.get("type", "")).lower() == "text":
+                    data = current.get("data")
+                    if isinstance(data, dict):
+                        add_text(data.get("text"))
+                    elif isinstance(data, (str, bytes)):
+                        add_text(data)
+                for value in current.values():
+                    walk(value)
+                return
+
+            if isinstance(current, (list, tuple, set)):
+                for item in current:
+                    walk(item)
+                return
+
+            for attr in (
+                "text",
+                "content",
+                "summary",
+                "raw_message",
+                "message",
+                "messages",
+                "data",
+                "elements",
+                "segments",
+                "quote",
+                "source",
+                "reply",
+                "message_reference",
+            ):
+                try:
+                    walk(getattr(current, attr, None))
+                except Exception:
+                    continue
+
+        walk(node)
+        return texts
+
+    def _cleanup_pending(self):
+        now = datetime.now()
+        expired = []
+        for flag, info in self.pending.items():
+            try:
+                t = datetime.strptime(info.get("time", ""), "%Y-%m-%d %H:%M:%S")
+                if now - t > timedelta(days=self.PENDING_TTL_DAYS):
+                    expired.append(flag)
+            except (ValueError, TypeError):
+                logger.warning(f"待处理时间格式异常，保留不删: flag={flag}, time={info.get('time')!r}")
+        if expired:
+            for flag in expired:
+                self.pending.pop(flag, None)
+            self._save(self.pd_file, self.pending)
+            logger.info(f"已清理 {len(expired)} 条过期待处理请求")
+
+    # ───────── 群黑名单管理 ─────────
+
+    def _add_group_to_blacklist(self, gid: str):
+        if not gid:
+            return
+        group_bl_key = "group_blacklist"
+        group_blacklist = self.blacklist.get(group_bl_key, {})
+        if str(gid) not in group_blacklist:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            group_blacklist[str(gid)] = {"time": now}
+            self.blacklist[group_bl_key] = group_blacklist
+            self._save(self.bl_file, self.blacklist)
+            logger.info(f"群 {gid} 已加入黑名单")
+
+    def _is_group_blocked(self, gid: str) -> bool:
+        if not gid:
+            return False
+        group_bl_key = "group_blacklist"
+        group_blacklist = self.blacklist.get(group_bl_key, {})
+        return str(gid) in group_blacklist
+
+    async def _resolve_user_name(self, event: AstrMessageEvent, uid: str) -> str:
+        """获取用户昵称,失败时回退到 uid 字符串。
+
+        用于 issue #25 通知模板中的 ``{user_name}`` 占位。
+        """
+        if not uid:
+            return "未知"
+        try:
+            res = await self._api("get_stranger_info", event=event, user_id=int(uid))
+            if self._api_ok(res):
+                data = self._api_data(res)
+                if isinstance(data, dict):
+                    name = data.get("nickname")
+                    if name:
+                        return str(name)
+        except Exception as e:
+            logger.debug(f"获取用户昵称失败 uid={uid}: {e}")
+        return uid
+
+    # ───────── 请求事件自动监听 ─────────
+
+    @filter.on_llm_response()
+    async def on_llm_response(self, event: AstrMessageEvent, response):
+        """issue #63: 在 LLM 回复完成时缓存 bot 发言，补齐 on_decorating_result 覆盖不到的路径。
+
+        AstrBot 4.27.3 中以下出站路径不会触发 on_decorating_result（result_decorate 阶段），
+        会导致禁言转发里看不到 bot 的 LLM 回复：
+
+        1. 流式输出（STREAMING_RESULT）由 respond 阶段 send_streaming 直连平台发送，
+           result_decorate 对流式结果直接 return，只有 STREAMING_FINISH 收尾轮能拿到链，
+           中途报错/中止时拿不到完整文本；
+        2. agent 工具直发结果（tool_direct_result）走 event.send() 绕过装饰阶段；
+        3. 分段回复的中间段、TTS/图片转换失败回退等路径同样可能跳过钩子。
+
+        on_llm_response 由 agent runner 的 on_agent_done 回调触发（流式/非流式都会走），
+        此时 response.result_chain / completion_text 携带完整最终回复，是最可靠的捕获点。
+        同一条消息随后若也被 on_decorating_result 捕获，由指纹去重保证只缓存一次。
+        """
+        try:
+            if self.ban_forward_history_count <= 0:
+                return
+            if response is None:
+                return
+            try:
+                message_type = event.get_message_type()
+            except Exception as e:
+                logger.warning(f"on_llm_response 读取消息类型失败，跳过 LLM 回复缓存: {e}")
+                return
+            if message_type != MessageType.GROUP_MESSAGE:
+                return
+            try:
+                gid = str(event.get_group_id() or "").strip()
+            except Exception as e:
+                logger.warning(f"on_llm_response 读取群号失败，跳过 LLM 回复缓存: {e}")
+                gid = ""
+            if not gid:
+                return
+            # 优先 result_chain（推荐字段），回退 completion_text 纯文本
+            text = ""
+            result_chain = getattr(response, "result_chain", None)
+            if result_chain is not None:
+                try:
+                    text = str(result_chain.get_plain_text() or "").strip()
+                except Exception:
+                    text = ""
+            if not text:
+                completion_text = getattr(response, "completion_text", None)
+                if isinstance(completion_text, str):
+                    text = completion_text.strip()
+            if not text:
+                return
+            self_id = await self._resolve_self_id(event)
+            if not self_id:
+                return
+            self_nick = await self._resolve_self_nickname(event)
+            # 与 on_decorating_result 的去重键保持同一算法（剥离占位符），
+            # 保证两条路径对同一条回复算出相同指纹
+            dedup_text = self._OUTBOUND_PLACEHOLDER_RE.sub("", text).strip()
+            self._cache_self_group_message(
+                gid,
+                text,
+                self_id=self_id,
+                self_nickname=self_nick,
+                dedup_key=dedup_text,
+            )
+        except Exception as e:
+            logger.warning(f"缓存 LLM 回复失败: {e}")
+
+    @filter.on_decorating_result()
+    async def on_decorating_result(self, event: AstrMessageEvent):
+        """issue #61: 缓存 bot 即将发出的群消息。
+
+        bot 的命令回复走 AstrBot 管道直接发送，不经过插件的 _api()，
+        所以 _api() 里的 send_group_msg 钩子只覆盖 _notify 等主动调用。
+        这里在框架发送前（result_decorate 阶段）拦截所有出站消息，
+        把 bot 自身发言补进群历史，禁言转发才能看到 bot 自己说了什么。
+        """
+        try:
+            if self.ban_forward_history_count <= 0:
+                return
+            result = event.get_result()
+            if result is None or not getattr(result, "chain", None):
+                return
+            # 只关心群聊出站消息
+            try:
+                message_type = event.get_message_type()
+            except Exception as e:
+                logger.warning(f"on_decorating_result 读取消息类型失败，跳过出站缓存: {e}")
+                return
+            if message_type != MessageType.GROUP_MESSAGE:
+                return
+            try:
+                gid = str(event.get_group_id() or "").strip()
+            except Exception as e:
+                logger.warning(f"on_decorating_result 读取群号失败，跳过出站缓存: {e}")
+                gid = ""
+            if not gid:
+                return
+            self_id = await self._resolve_self_id(event)
+            if not self_id:
+                return
+            self_nick = await self._resolve_self_nickname(event)
+            # 拼出消息链的文本形式
+            parts: List[str] = []
+            for comp in result.chain:
+                text = getattr(comp, "text", None)
+                if isinstance(text, str):
+                    parts.append(text)
+                else:
+                    ctype = getattr(comp, "type", None)
+                    if isinstance(ctype, str):
+                        comp_type = ctype
+                    elif ctype is not None and hasattr(ctype, "name"):
+                        comp_type = ctype.name
+                    else:
+                        comp_type = type(comp).__name__
+                    # ComponentType 枚举值形如 "Plain"/"At"，统一转 OneBot 小写风格
+                    parts.append(f"[CQ:{comp_type.lower()}]")
+            content = "".join(parts).strip()
+            if not content:
+                return
+            # 去重键剥离占位符：LLM 层（on_llm_response）先缓存的是纯原文，
+            # 装饰阶段插入的 At/Reply 等占位符若参与指纹，同一句话会缓存两遍 (#63)。
+            # Reply 段的 text 属性是空字符串，不会产生占位符；占位符统一来自非文本组件。
+            dedup_content = self._OUTBOUND_PLACEHOLDER_RE.sub("", content).strip()
+            self._cache_self_group_message(
+                gid,
+                content,
+                self_id=self_id,
+                self_nickname=self_nick,
+                dedup_key=dedup_content,
+            )
+        except Exception as e:
+            logger.warning(f"缓存出站群消息失败: {e}")
+
+    @filter.event_message_type(EventMessageType.ALL)
+    async def handle_event(self, event: AstrMessageEvent) -> Optional[AstrMessageEvent]:
+        try:
+            self._cache_group_message(event)
+        except Exception as e:
+            logger.debug(f"缓存群聊消息失败: {e}")
+
+        try:
+            self._cache_private_message(event)
+        except Exception as e:
+            logger.debug(f"缓存私聊消息失败: {e}")
+
+        try:
+            raw = self._extract_event_payload(event, self._looks_like_friend_request)
+            if raw:
+                logger.info("捕获好友申请事件: keys=%s", sorted(raw.keys()))
+                await self._on_friend_req(raw, event)
+                return None
+
+            raw = self._extract_event_payload(event, self._looks_like_group_request)
+            if raw:
+                sub = str(raw.get("sub_type", "")).lower()
+                # 只处理「邀请 bot 入群」。群员拉其他用户时常见 sub_type=add，
+                # 或 bot 已在群内的 invite 审批请求，均不应发【群邀请】通知。
+                if sub == "invite":
+                    logger.info("捕获群邀请事件: keys=%s", sorted(raw.keys()))
+                    await self._on_group_invite(raw, event)
+                    return None
+                if sub == "add":
+                    logger.info(
+                        "忽略入群申请事件(sub_type=add，非 bot 被邀请): group_id=%s, user_id=%s, flag=%s",
+                        raw.get("group_id"),
+                        raw.get("user_id"),
+                        raw.get("flag"),
+                    )
+                    return None
+        except Exception as e:
+            logger.error(f"处理请求事件异常: {e}")
+
+        try:
+            uid = str(event.get_sender_id())
+            if uid and self._blocked(uid, "msg"):
+                return None
+        except Exception:
+            pass
+
+        return event
+
+    async def _on_friend_req(self, raw: dict, event: AstrMessageEvent = None):
+        uid = str(raw.get("user_id", ""))
+        flag = str(raw.get("flag", ""))
+        comment = raw.get("comment", "") or ""
+        request_id = self._new_request_id()
+
+        if not uid or not flag:
+            return
+
+        if not self._valid_uid(uid):
+            logger.warning(f"好友申请 uid 格式异常，已忽略: {uid}")
+            return
+
+        if self._blocked(uid, "friend"):
+            await self._api("set_friend_add_request", event=event, flag=flag, approve=False)
+            await self._notify(f"🚫 自动拒绝黑名单好友申请\nQQ号: {uid}")
+            return
+
+        nickname = uid
+        try:
+            info_res = await self._api("get_stranger_info", event=event, user_id=int(uid))
+            if self._api_ok(info_res):
+                info_data = self._api_data(info_res)
+                if isinstance(info_data, dict):
+                    nickname = info_data.get("nickname", uid)
+        except Exception:
+            pass
+
+        async with self._lock:
+            self.pending[flag] = dict(
+                type="friend", user_id=uid, nickname=nickname, comment=comment,
+                time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                notify_ids=[],
+                request_id=request_id,
+                request_flag=flag,
+                request_type="friend",
+            )
+            self._save(self.pd_file, self.pending)
+        logger.info(f"已记录好友申请待处理: flag={flag}, request_id={request_id}, uid={uid}, nickname={nickname}")
+
+        msg_ids = await self._notify_with_ids(
+            f"【好友申请】同意/拒绝/拉黑：\n"
+            f"昵称：{nickname}\n"
+            f"QQ号：{uid}\n"
+            f"flag：{flag}\n"
+            f"验证信息：{comment if comment else '无'}"
+        )
+        if msg_ids:
+            async with self._lock:
+                self.pending[flag]["notify_ids"] = msg_ids
+                self._save(self.pd_file, self.pending)
+            logger.info(f"好友申请通知消息ID已记录: flag={flag}, ids={msg_ids}")
+        else:
+            logger.warning(f"好友申请通知未获取到可匹配的消息ID: flag={flag}, uid={uid}")
+
+    async def _bot_already_in_group(self, event: AstrMessageEvent, gid: str) -> bool:
+        """判断 bot 是否已在该群。已在群内时的 invite/add 是审批别人，不是 bot 被邀请。"""
+        if not gid:
+            return False
+        try:
+            res = await self._api("get_group_list", event=event, no_cache=False)
+            groups = self._api_list(res) if res is not None else []
+            for g in groups:
+                if str(g.get("group_id", "")).strip() == str(gid).strip():
+                    return True
+        except Exception as e:
+            logger.debug(f"检查 bot 是否在群 {gid} 失败: {e}")
+        return False
+
+    async def _on_group_invite(self, raw: dict, event: AstrMessageEvent = None):
+        """
+        仅处理「邀请 bot 入群」：
+        - 群员拉其他用户 / bot 已在群内的入群审批 → 直接忽略，不发【群邀请】
+        - uid="0"（机器人主动申请加群）走 group_blacklist 校验
+        """
+        uid = str(raw.get("user_id", ""))
+        gid = str(raw.get("group_id", ""))
+        flag = str(raw.get("flag", ""))
+        comment = raw.get("comment", "") or ""
+        sub = str(raw.get("sub_type", "invite") or "invite").lower()
+        request_id = self._new_request_id()
+        if not flag:
+            return
+
+        # 明确不是 invite 的请求（如 add 入群申请）不作为 bot 群邀请
+        if sub != "invite":
+            logger.info(f"跳过非 bot 群邀请: sub_type={sub}, gid={gid}, uid={uid}, flag={flag}")
+            return
+
+        # flag 形如 add:... 时是别人申请入群，不是邀请 bot
+        flag_lower = flag.lower()
+        if flag_lower.startswith("add:"):
+            logger.info(f"跳过入群申请 flag: gid={gid}, uid={uid}, flag={flag}")
+            return
+
+        if uid and not self._valid_uid(uid):
+            logger.warning(f"群邀请 uid 格式异常，已忽略: {uid}")
+            return
+        if gid and not self._valid_gid(gid):
+            logger.warning(f"群邀请 gid 格式异常，已忽略: {gid}")
+            return
+
+        # bot 已在群内 → 这是群员拉其他人 / 入群审批，不是 bot 被邀请
+        if await self._bot_already_in_group(event, gid):
+            logger.info(
+                "跳过群内成员拉人事件(bot已在群内，非 bot 被邀请): gid=%s, uid=%s, flag=%s",
+                gid, uid, flag,
+            )
+            return
+
+        # uid="0" 表示机器人主动申请加群，跳过用户黑名单校验，只走群黑名单
+        if uid and uid != "0" and self._blocked(uid, "group_invite"):
+            await self._api("set_group_add_request", event=event, flag=flag, approve=False, sub_type=sub)
+            await self._notify(f"🚫 自动拒绝黑名单群邀请\n邀请人: {uid}\n群号: {gid}")
+            return
+
+        if self._is_group_blocked(gid):
+            res = await self._api("set_group_add_request", event=event, flag=flag, approve=False, sub_type=sub)
+            if not self._api_ok(res):
+                logger.warning(f"无法拒绝黑名单群 {gid} 的邀请（可能已被拉入），等待进群后处理: {res}")
+            else:
+                await self._notify(
+                    f"🚫 自动拒绝黑名单群邀请\n群号: {gid}\n"
+                    f"⚠️ 该群曾将Bot踢出，已自动拒绝邀请"
+                )
+                return
+
+        inviter_nickname = uid if uid != "0" else "（机器人主动申请）"
+        if uid and uid != "0":
+            try:
+                info_res = await self._api("get_stranger_info", event=event, user_id=int(uid))
+                if self._api_ok(info_res):
+                    info_data = self._api_data(info_res)
+                    if isinstance(info_data, dict):
+                        inviter_nickname = info_data.get("nickname", uid)
+            except Exception:
+                pass
+
+        group_name = gid
+        try:
+            group_res = await self._api("get_group_info", event=event, group_id=int(gid))
+            if self._api_ok(group_res):
+                group_data = self._api_data(group_res)
+                if isinstance(group_data, dict):
+                    group_name = group_data.get("group_name", gid)
+        except Exception:
+            pass
+
+        async with self._lock:
+            self.pending[flag] = dict(
+                type="group", group_id=gid, group_name=group_name,
+                user_id=uid, inviter_nickname=inviter_nickname,
+                sub_type=sub, comment=comment,
+                time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                notify_ids=[],
+                request_id=request_id,
+                request_flag=flag,
+                request_type="group",
+            )
+            self._save(self.pd_file, self.pending)
+        logger.info(f"已记录群邀请待处理: flag={flag}, request_id={request_id}, gid={gid}, uid={uid}")
+
+        msg_ids = await self._notify_with_ids(
+            f"【群邀请】同意/拒绝/拉黑：\n"
+            f"邀请人昵称：{inviter_nickname}\n"
+            f"邀请人QQ：{uid}\n"
+            f"群名称：{group_name}\n"
+            f"群号：{gid}\n"
+            f"flag：{flag}\n"
+            f"验证信息：{comment if comment else '无'}"
+        )
+        if msg_ids:
+            async with self._lock:
+                self.pending[flag]["notify_ids"] = msg_ids
+                self._save(self.pd_file, self.pending)
+            logger.info(f"群邀请通知消息ID已记录: flag={flag}, ids={msg_ids}")
+        else:
+            logger.warning(f"群邀请通知未获取到可匹配的消息ID: flag={flag}, gid={gid}")
+
+    # ───────── 通知事件监听（被踢 / 进群）─────────
+
+    @filter.event_message_type(EventMessageType.ALL)
+    async def handle_notice(self, event: AstrMessageEvent):
+        """
+        修复9: asyncio.sleep(2) 包装在 try/except 中，防止 notice_type 不匹配时异常泄漏
+        """
+        try:
+            raw = self._extract_event_payload(event, self._looks_like_notice)
+            if isinstance(raw, dict):
+                logger.info("捕获通知事件: keys=%s", sorted(raw.keys()))
+                notice_type = raw.get("notice_type")
+                group_id = str(raw.get("group_id", ""))
+                user_id = str(raw.get("user_id", ""))
+                operator_id = str(raw.get("operator_id", ""))
+                self_id = str(event.get_self_id())
+
+                if notice_type == "group_decrease":
+                    sub_type = raw.get("sub_type", "")
+                    if sub_type in ("kick", "kick_me") and user_id == self_id:
+                        if group_id:
+                            self._add_group_to_blacklist(group_id)
+                            logger.info(f"Bot被踢出群 {group_id}，已将该群加入黑名单")
+                            # 获取操作者昵称 (issue #25 模板: user_name / user_qq)
+                            operator_name = await self._resolve_user_name(event, operator_id)
+                            msg = (
+                                f"呜呜呜X﹏X！我在{group_id}被{operator_name}"
+                                f"{operator_id}踢出群了！已将此群拉黑！"
+                            )
+                            await self._notify(msg)
+
+                elif notice_type == "group_ban":
+                    # issue #25: Bot 被禁言时通知 bot 主并转发禁言前记录
+                    # issue #57: Bot 被解除禁言时通知 bot 主
+                    sub_type = raw.get("sub_type", "")
+                    if sub_type == "ban" and user_id == self_id:
+                        operator_name = await self._resolve_user_name(event, operator_id)
+                        msg = (
+                            f"呜呜呜X﹏X！我在{group_id}被{operator_name}"
+                            f"{operator_id}禁言了！"
+                        )
+                        await self._notify(msg)
+                        await self._send_ban_history_forward(event, group_id)
+                    # issue #57: Bot 被解除禁言时通知 bot 主
+                    elif sub_type == "lift_ban" and user_id == self_id:
+                        if not group_id:
+                            return
+                        operator_name = await self._resolve_user_name(event, operator_id)
+                        group_name = group_id
+                        try:
+                            group_res = await self._api("get_group_info", event=event, group_id=int(group_id))
+                            if self._api_ok(group_res):
+                                group_data = self._api_data(group_res)
+                                if isinstance(group_data, dict):
+                                    group_name = group_data.get("group_name", group_id)
+                        except Exception:
+                            pass
+                        msg = (
+                            f"太好了！我在{group_name}{group_id}被{operator_name}"
+                            f"{operator_id}解除禁言了！"
+                        )
+                        await self._notify(msg)
+                        logger.info(
+                            f"Bot 在群 {group_id} 被 {operator_name}({operator_id}) 解除禁言，已通知管理员"
+                        )
+
+                elif notice_type == "group_increase":
+                    sub_type = raw.get("sub_type", "")
+                    # 仅处理"invite"（有人拉Bot进群），且排除自己操作自己的情况
+                    if (
+                        user_id == self_id
+                        and group_id
+                        and sub_type == "invite"
+                        and operator_id != self_id
+                    ):
+                        # 获取操作者昵称（与参考插件 get_nickname 逻辑一致）
+                        operator_name = operator_id if operator_id else "未知"
+                        if operator_id:
+                            try:
+                                info_res = await self._api("get_stranger_info", event=event, user_id=int(operator_id))
+                                if self._api_ok(info_res):
+                                    info_data = self._api_data(info_res)
+                                    if isinstance(info_data, dict):
+                                        operator_name = info_data.get("nickname", operator_id)
+                            except Exception:
+                                pass
+
+                        # 获取群名称
+                        group_name = group_id
+                        try:
+                            group_res = await self._api("get_group_info", event=event, group_id=int(group_id))
+                            if self._api_ok(group_res):
+                                group_data = self._api_data(group_res)
+                                if isinstance(group_data, dict):
+                                    group_name = group_data.get("group_name", group_id)
+                        except Exception:
+                            pass
+
+                        # 构建通知消息（与参考插件 _handle_invited 格式一致）
+                        msg = f"主人..我被 {operator_name}({operator_id}) 拉进了 {group_name}({group_id})。"
+
+                        # 管理员拉群直接放行，其余人按规则过滤
+                        admins = self._get_admins()
+                        if operator_id not in admins:
+                            if self._is_group_blocked(group_id):
+                                msg += f"\n群聊 {group_name}({group_id}) 在黑名单里，已退群"
+                                try:
+                                    await self._api(
+                                        "send_group_msg",
+                                        event=event,
+                                        group_id=int(group_id),
+                                        message="别老是让我进来又给我踢出去，烦不烦啊？！"
+                                    )
+                                    await asyncio.sleep(2)
+                                    await self._api("set_group_leave", event=event, group_id=int(group_id))
+                                except Exception as notify_err:
+                                    logger.error(f"黑名单群 {group_id} 退群异常: {notify_err}")
+                                logger.info(f"已自动退出黑名单群 {group_id}")
+
+                        await self._notify(msg)
+                        logger.info(f"Bot被 {operator_name}({operator_id}) 拉入群 {group_name}({group_id})，已通知管理员")
+
+        except Exception as e:
+            logger.error(f"处理通知事件异常: {e}")
+
+    # ───────── 查看列表 ─────────
+
+    @filter.command("好友", alias=["fl"])
+    async def cmd_friends(self, event: AstrMessageEvent):
+        if self._sender_blocked(event):
+            return
+        if not self._is_admin(event):
+            yield event.plain_result("❌ 仅管理员可用")
+            return
+
+        res = await self._api("get_friend_list", event=event)
+        if not res:
+            yield event.plain_result("❌ 获取失败")
+            return
+
+        # API 返回格式：可能是 list 或 dict
+        if isinstance(res, list):
+            friends = res
+        elif isinstance(res, dict):
+            friends = res.get("data", [])
+        else:
+            yield event.plain_result("❌ 获取失败")
+            return
+
+        if not friends:
+            yield event.plain_result("📋 没有好友")
+            return
+
+        lines = ["📋 好友列表"]
+        for i, f in enumerate(friends, 1):
+            uid = f.get("user_id", "?")
+            tag = " 🚫" if self._blocked(str(uid)) else ""
+            lines.append(f"{i}. {f.get('nickname', '?')} ({uid}){tag}")
+
+        yield event.plain_result("\n".join(lines))
+
+    @filter.command("群", alias=["gl"])
+    async def cmd_groups(self, event: AstrMessageEvent):
+        if self._sender_blocked(event):
+            return
+        if not self._is_admin(event):
+            yield event.plain_result("❌ 仅管理员可用")
+            return
+
+        res = await self._api("get_group_list", event=event)
+        if not res:
+            yield event.plain_result("❌ 获取失败")
+            return
+
+        # API 返回格式：可能是 list 或 dict
+        if isinstance(res, list):
+            groups = res
+        elif isinstance(res, dict):
+            groups = res.get("data", [])
+        else:
+            yield event.plain_result("❌ 获取失败")
+            return
+
+        if not groups:
+            yield event.plain_result("📋 没有群")
+            return
+
+        lines = ["📋 群列表"]
+        for i, g in enumerate(groups, 1):
+            gid = g.get('group_id', '?')
+            tag = " 🚫" if self._is_group_blocked(str(gid)) else ""
+            lines.append(f"{i}. {g.get('group_name', '?')} ({gid}){tag}")
+
+        yield event.plain_result("\n".join(lines))
+
+    # ───────── 黑名单 ─────────
+
+    @filter.command("拉黑", alias=["addbl", "屏蔽"])
+    async def cmd_bl_add(self, event: AstrMessageEvent, args: str = ""):
+        if self._sender_blocked(event):
+            return
+        if not self._is_admin(event):
+            yield event.plain_result("❌ 仅管理员可用")
+            return
+
+        uids = self._ids(args)
+        if not uids:
+            if self._get_reply_id(event):
+                async for result in self._process_reply(event, action="block"):
+                    yield result
+                return
+            yield event.plain_result("⚠️ /拉黑 12345 [67890] ...  或引用通知消息回复 /拉黑")
+            return
+
+        valid, invalid = [], []
+        for u in uids:
+            if self._valid_uid(u):
+                valid.append(u)
+            else:
+                invalid.append(u)
+
+        if invalid:
+            yield event.plain_result(f"⚠️ 格式无效（需5-12位数字）: {', '.join(invalid)}")
+            if not valid:
+                return
+
+        async with self._lock:
+            added, dup = [], []
+            for u in valid:
+                if u in self.blacklist:
+                    dup.append(u)
+                else:
+                    self.blacklist[u] = dict(
+                        time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        block_msg=True, block_friend=True, block_group_invite=True,
+                    )
+                    added.append(u)
+            self._save(self.bl_file, self.blacklist)
+
+        parts = []
+        if added:
+            parts.append(f"✅ 已拉黑 {len(added)} 人: {', '.join(added)}")
+        if dup:
+            parts.append(f"⚠️ 已存在: {', '.join(dup)}")
+        yield event.plain_result("\n".join(parts))
+
+    @filter.command("解封", alias=["rmbl", "取消屏蔽"])
+    async def cmd_bl_rm(self, event: AstrMessageEvent, args: str = ""):
+        if self._sender_blocked(event):
+            return
+        if not self._is_admin(event):
+            yield event.plain_result("❌ 仅管理员可用")
+            return
+
+        uids = self._ids(args)
+        if not uids:
+            yield event.plain_result("⚠️ /解封 12345 [67890] ...")
+            return
+
+        async with self._lock:
+            removed, miss = [], []
+            for u in uids:
+                if u in self.blacklist:
+                    del self.blacklist[u]
+                    removed.append(u)
+                else:
+                    miss.append(u)
+            self._save(self.bl_file, self.blacklist)
+
+        parts = []
+        if removed:
+            parts.append(f"✅ 已解封 {len(removed)} 人: {', '.join(removed)}")
+        if miss:
+            parts.append(f"⚠️ 不存在: {', '.join(miss)}")
+        yield event.plain_result("\n".join(parts))
+
+    @filter.command("黑名单", alias=["lsbl"])
+    async def cmd_bl_ls(self, event: AstrMessageEvent):
+        if self._sender_blocked(event):
+            return
+        if not self._is_admin(event):
+            yield event.plain_result("❌ 仅管理员可用")
+            return
+
+        if not self.blacklist:
+            yield event.plain_result("📋 黑名单为空")
+            return
+
+        lines = [f"🚫 黑名单 ({len(self.blacklist)} 人)"]
+        for uid, info in self.blacklist.items():
+            if uid == "group_blacklist":
+                group_bl = info
+                for gid, g_info in group_bl.items():
+                    t = g_info.get("time", "?")
+                    lines.append(f"- 群 {gid} | 加入黑名单时间: {t}")
+                continue
+
+            m = "✅" if info.get("block_msg", True) else "❌"
+            fr = "✅" if info.get("block_friend", True) else "❌"
+            gi = "✅" if info.get("block_group_invite", True) else "❌"
+            lines.append(f"- {uid} | 消息{m} 好友{fr} 群邀请{gi}")
+
+        yield event.plain_result("\n".join(lines))
+
+    # ───────── 待处理 ─────────
+
+    def _render_pending_card(self, pending: dict) -> str:
+        """把待处理请求渲染成图片卡片，失败返回空字符串。"""
+        import os as _os
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+        except Exception as e:
+            logger.warning(f"Pillow 不可用，卡片渲染跳过: {e}")
+            return ""
+
+        W = 780
+        PAD = 24
+        BG = (19, 21, 25)
+        CARD = (24, 27, 32)
+        EDGE = (38, 42, 49)
+        TXT = (233, 231, 226)
+        MUT = (127, 131, 139)
+        AMB = (216, 162, 74)
+        BLU = (122, 168, 216)
+        GRN = (142, 216, 168)
+        SUB = (185, 192, 201)
+        fdir = r"C:\Windows\Fonts"
+
+        def _font(size, bold=False):
+            names = ["msyhbd.ttc", "msyh.ttc"] if bold else ["msyh.ttc", "msyhbd.ttc"]
+            for name in names:
+                path = _os.path.join(fdir, name)
+                if _os.path.exists(path):
+                    try:
+                        return ImageFont.truetype(path, size)
+                    except Exception:
+                        continue
+            return ImageFont.load_default()
+
+        def _clip(draw, text, font, max_w):
+            text = str(text or "")
+            if draw.textlength(text, font=font) <= max_w:
+                return text
+            while text and draw.textlength(text + "…", font=font) > max_w:
+                text = text[:-1]
+            return text + "…"
+
+        f_tag = _font(13, True)
+        f_title = _font(26, True)
+        f_name = _font(18, True)
+        f_body = _font(14)
+        f_small = _font(12)
+
+        items = list(pending.items())
+        entry_h = 96
+        head_h = 104
+        foot_h = 54
+        H = head_h + entry_h * max(1, len(items)) + foot_h + PAD
+
+        img = Image.new("RGB", (W, H), BG)
+        d = ImageDraw.Draw(img)
+        d.rounded_rectangle([12, 12, W - 12, H - 12], radius=16, outline=EDGE, width=1)
+
+        d.text((PAD + 12, 32), "PENDING REQUESTS", font=f_tag, fill=AMB)
+        d.text((PAD + 12, 54), "待处理请求", font=f_title, fill=TXT)
+        badge = f"{len(items)} 条"
+        bw = d.textlength(badge, font=f_body) + 26
+        d.rounded_rectangle([W - PAD - 12 - bw, 44, W - PAD - 12, 74], radius=15, outline=(47, 74, 58), width=1)
+        d.text((W - PAD - 12 - bw + 13, 49), badge, font=f_body, fill=GRN)
+        d.line([PAD + 12, head_h - 14, W - PAD - 12, head_h - 14], fill=EDGE, width=1)
+
+        y = head_h
+        for flag_key, info in items:
+            friend = info.get("type") == "friend"
+            accent = AMB if friend else BLU
+            if friend:
+                label = "可疑好友" if info.get("snowluma_doubt") else "好友"
+            else:
+                label = "过滤入群" if info.get("snowluma_filtered") else "群邀请"
+            d.rounded_rectangle([PAD + 12, y + 6, W - PAD - 12, y + entry_h - 10], radius=10, fill=CARD, outline=EDGE, width=1)
+            d.rounded_rectangle([PAD + 12, y + 6, PAD + 16, y + entry_h - 10], radius=2, fill=accent)
+            tx = PAD + 30
+            maxw = W - PAD - 12 - tx - 16
+            nick = str(info.get("nickname") or "").strip() or "无昵称"
+            uid = str(info.get("user_id") or "")
+            id_label = "UID" if info.get("snowluma_doubt") else "QQ"
+            nick_text = _clip(d, "「%s」" % nick, f_name, maxw - 150)
+            d.text((tx, y + 16), nick_text, font=f_name, fill=TXT)
+            nw = d.textlength(nick_text, font=f_name)
+            d.text((tx + nw + 12, y + 21), label, font=f_small, fill=accent)
+            comment = str(info.get("comment") or "无")[:28]
+            line2 = f"{id_label} {uid} · 验证 {comment} · 来源 {info.get('source') or '未知'}"
+            d.text((tx, y + 46), _clip(d, line2, f_body, maxw), font=f_body, fill=SUB)
+            line3 = f"flag {flag_key} · 编号 {info.get('request_id', '')} · {info.get('time', '')}"
+            d.text((tx, y + 70), _clip(d, line3, f_small, maxw), font=f_small, fill=MUT)
+            y += entry_h
+
+        d.text((PAD + 12, H - foot_h + 8), "引用该消息回复 /同意 · /拒绝 · /拉黑，或直接带 编号/flag", font=f_small, fill=MUT)
+
+        out = self.data_dir / "pending_card.png"
+        img.save(str(out))
+        return str(out)
+
+    @filter.command("待处理", alias=["pending"])
+    async def cmd_pending(self, event: AstrMessageEvent):
+        if self._sender_blocked(event):
+            return
+        if not self._is_admin(event):
+            yield event.plain_result("❌ 仅管理员可用")
+            return
+
+        synced = await self._sync_snowluma_pending_requests(event)
+        async with self._lock:
+            self._cleanup_pending()
+            pending_snapshot = dict(self.pending)
+        logger.info(f"待处理查询: pending_count={len(pending_snapshot)}, synced={synced}, file={self.pd_file}")
+
+        if not pending_snapshot:
+            yield event.plain_result("📋 无待处理请求\nSnowLuma 标准 request 事件和扩展过滤列表均未发现未处理申请")
+            return
+
+        card_path = ""
+        try:
+            card_path = await asyncio.to_thread(self._render_pending_card, pending_snapshot)
+        except Exception as e:
+            logger.warning(f"待处理卡片渲染失败，回退文本: {e}")
+        if card_path:
+            try:
+                yield event.image_result(card_path)
+                return
+            except Exception as e:
+                logger.warning(f"待处理卡片发送失败，回退文本: {e}")
+
+        lines = ["📋 待处理请求（引用对应消息回复 /同意 或 /拒绝 或 /拉黑，或使用编号/flag）"]
+        for flag_key, info in pending_snapshot.items():
+            t = info.get("time", "?")
+            request_id = info.get("request_id", flag_key)
+            if info["type"] == "friend":
+                nickname = info.get('nickname', info['user_id'])
+                comment = info.get('comment') or '无'
+                label = "可疑好友" if info.get("snowluma_doubt") else "好友"
+                id_label = "UID" if info.get("snowluma_doubt") else "QQ"
+                source_text = info.get("source") or ""
+                nick_text = ("「%s」" % nickname) if nickname else "(无昵称)"
+                lines.append(
+                    f"🔹 {label} | 编号:{request_id} | flag:{flag_key} | 昵称:{nick_text} {id_label}:{info['user_id']} | 验证:{comment} | 来源:{source_text or '未知'} | {t}"
+                )
+            else:
+                inviter_nickname = info.get('inviter_nickname', info['user_id'])
+                group_name = info.get('group_name', info['group_id'])
+                comment = info.get('comment') or '无'
+                label = "过滤入群" if info.get("snowluma_filtered") else "群邀"
+                lines.append(
+                    f"🔸 {label} | 编号:{request_id} | flag:{flag_key} | 群:{group_name}({info['group_id']}) | 邀请人:{inviter_nickname}({info['user_id']}) | 验证:{comment} | {t}"
+                )
+
+        yield event.plain_result("\n".join(lines))
+
+    # ───────── 加好友 / 加群 ─────────
+
+    @filter.command("加好友", alias=["addfriend"])
+    async def cmd_add_friend(self, event: AstrMessageEvent, args: str = ""):
+        if self._sender_blocked(event):
+            return
+        if not self._is_admin(event):
+            yield event.plain_result("❌ 仅管理员可用")
+            return
+
+        parts = args.strip().split(maxsplit=1)
+        uids = self._ids(args)
+        if not uids:
+            yield event.plain_result("⚠️ /加好友 QQ号 [验证消息] [备注]")
+            return
+
+        uid = uids[0]
+        if not self._valid_uid(uid):
+            yield event.plain_result(f"⚠️ QQ号格式无效（需5-12位数字）: {uid}")
+            return
+
+        # 解析参数
+        verify = ""
+        remark = ""
+        if len(parts) > 1:
+            sub_args = parts[1].split()
+            if len(sub_args) >= 1:
+                verify = sub_args[0]
+            if len(sub_args) >= 2:
+                remark = sub_args[1]
+
+        # 获取客户端
+        client = None
+        if hasattr(event, 'bot'):
+            client = event.bot
+        else:
+            for platform in self.context.platform_manager.get_insts():
+                if hasattr(platform, 'get_client'):
+                    client = platform.get_client()
+                    if client:
+                        break
+
+        if not client:
+            yield event.plain_result("❌ 无法获取客户端")
+            return
+        if ExpansionHandle is None:
+            yield event.plain_result("❌ 扩展 Packet 模块不可用，SnowLuma 没有标准 OneBot 主动加好友 action")
+            return
+
+        try:
+            self_id = int(event.get_self_id())
+            target_uin = int(uid)
+            msg = await ExpansionHandle.add_friend(
+                client=client,
+                target_uin=target_uin,
+                self_id=self_id,
+                verify=verify,
+                remark=remark,
+            )
+            yield event.plain_result(msg)
+        except Exception as e:
+            logger.error(f"加好友失败: {e}")
+            # 检查是否是 Packet 超时错误
+            if "timeout" in str(e).lower() or "sendPacket" in str(e):
+                yield event.plain_result(
+                    f"⚠️ SnowLuma send_packet 调用超时或失败。\n"
+                    f"SnowLuma 没有标准 OneBot 主动加好友 action，本命令只能走实验性原始包，"
+                    f"不同 QQ/SnowLuma 版本可能不可用。\n\n"
+                    f"请手动在 QQ 上添加好友: {uid}"
+                )
+            else:
+                yield event.plain_result(f"❌ 加好友失败: {str(e)}")
+
+    @filter.command("加群", alias=["addgroup"])
+    async def cmd_add_group(self, event: AstrMessageEvent, args: str = ""):
+        if self._sender_blocked(event):
+            return
+        if not self._is_admin(event):
+            yield event.plain_result("❌ 仅管理员可用")
+            return
+
+        nums = self._ids(args)
+        if not nums:
+            yield event.plain_result("⚠️ /加群 群号 [答案]")
+            return
+
+        gid = nums[0]
+        if not self._valid_gid(gid):
+            yield event.plain_result(f"⚠️ 群号格式无效（需5-12位数字）: {gid}")
+            return
+
+        if self._is_group_blocked(gid):
+            yield event.plain_result(
+                f"⚠️ 群 {gid} 在黑名单中，无法加入\n"
+                f"该群曾将Bot踢出，如需加入请先使用 /解封群 命令"
+            )
+            return
+
+        # 解析答案参数
+        answer = ""
+        parts = args.strip().split()
+        if len(parts) > 1:
+            answer = parts[1]
+
+        # 获取客户端
+        client = None
+        if hasattr(event, 'bot'):
+            client = event.bot
+        else:
+            for platform in self.context.platform_manager.get_insts():
+                if hasattr(platform, 'get_client'):
+                    client = platform.get_client()
+                    if client:
+                        break
+
+        if not client:
+            yield event.plain_result("❌ 无法获取客户端")
+            return
+        if ExpansionHandle is None:
+            yield event.plain_result("❌ 扩展 Packet 模块不可用，SnowLuma 没有标准 OneBot 主动加群 action")
+            return
+
+        try:
+            target_gid = int(gid)
+            msg = await ExpansionHandle.add_group(
+                client=client,
+                target_gid=target_gid,
+                answer=answer,
+            )
+            yield event.plain_result(msg)
+        except Exception as e:
+            logger.error(f"加群失败: {e}")
+            # 检查是否是 Packet 超时错误
+            if "timeout" in str(e).lower() or "sendPacket" in str(e):
+                yield event.plain_result(
+                    f"⚠️ SnowLuma send_packet 调用超时或失败。\n"
+                    f"SnowLuma 没有标准 OneBot 主动加群 action，本命令只能走实验性原始包，"
+                    f"不同 QQ/SnowLuma 版本可能不可用。\n\n"
+                    f"请手动在 QQ 上加入群: {gid}"
+                )
+            else:
+                yield event.plain_result(f"❌ 加群失败: {str(e)}")
+
+    # ───────── 删好友 / 退群 ─────────
+
+    @filter.command("QQ昵称", alias=["qqnickname", "setnickname", "改昵称"])
+    async def cmd_set_qq_nickname(self, event: AstrMessageEvent, args: str = ""):
+        """修改 bot 自身的 QQ 昵称
+
+        用法: /QQ昵称 新昵称
+        权限: 仅管理员 (即 AstrBot 内置 bot 主)
+
+        修复 #32:
+        部分 OneBot 实现 (napcat / Lagrange / go-cqhttp 等) 在 set_qq_profile
+        调用被服务端拒绝时,仍会返回 retcode=0 / status=ok,但实际昵称并未
+        修改。仅靠 _api_ok() 判断会误导用户。本实现在调用后通过
+        get_login_info / get_self_info 重新读取 bot 当前昵称,与期望值比对,
+        避免假阳性 "成功" 提示。
+        """
+        if self._sender_blocked(event):
+            return
+        if not self._is_admin(event):
+            yield event.plain_result("❌ 仅 Astrbot 内置 bot 主可用")
+            return
+
+        new_name = args.strip()
+        if not new_name:
+            yield event.plain_result("⚠️ /QQ昵称 新昵称\n例: /QQ昵称 守护姬")
+            return
+        if len(new_name) > 32:
+            yield event.plain_result("⚠️ 昵称过长（最多 32 字符）")
+            return
+
+        # 1. 调用 set_qq_profile
+        api_error: Optional[str] = None
+        api_returned_failure = False
+        try:
+            r = await self._set_qq_nickname(event, new_name)
+            if not self._api_ok(r):
+                api_returned_failure = True
+                api_error = self._api_failure_text(r)
+                logger.warning(
+                    "set_qq_profile 返回失败: response=%s", r,
+                )
+        except Exception as e:
+            api_error = str(e)
+            logger.error(f"set_qq_profile 调用异常: {e}")
+
+        # 2. 通过 get_login_info / get_self_info 重新读取当前昵称,以确认实际生效
+        #    避免 OneBot 实现返回 retcode=0 但服务端实际未修改的假阳性 (#32)
+        current_nick: Optional[str] = None
+        try:
+            info = await self._api("get_login_info", event=event)
+            if self._api_ok(info):
+                data = self._api_data(info)
+                if isinstance(data, dict):
+                    nick = data.get("nickname") or data.get("nick")
+                    if isinstance(nick, str) and nick:
+                        current_nick = nick
+        except Exception as e:
+            logger.debug(f"get_login_info 验证昵称失败: {e}")
+
+        # 部分实现 (如 go-cqhttp 早期) 暴露 get_self_info 而非 get_login_info
+        if current_nick is None:
+            try:
+                info = await self._api("get_self_info", event=event)
+                if self._api_ok(info):
+                    data = self._api_data(info)
+                    if isinstance(data, dict):
+                        nick = data.get("nickname") or data.get("nick") or data.get("name")
+                        if isinstance(nick, str) and nick:
+                            current_nick = nick
+            except Exception as e:
+                logger.debug(f"get_self_info 验证昵称失败: {e}")
+
+        # 3. 综合判断: API 明确失败 → 直接报错;否则以读取到的实际昵称为准
+        if api_error or api_returned_failure:
+            yield event.plain_result(
+                f"❌ 修改昵称失败: {api_error or 'API 返回失败'}\n"
+                f"请确认平台支持 set_qq_profile 且 bot 拥有修改昵称权限。"
+            )
+            return
+
+        if current_nick is not None and current_nick == new_name:
+            yield event.plain_result(f"✅ 昵称已修改为: {new_name}")
+            return
+
+        if current_nick is not None and current_nick != new_name:
+            # #32: API 没报错,但实际没改 — 提示用户,避免误以为成功
+            yield event.plain_result(
+                f"⚠️ set_qq_profile 调用成功,但读取到的当前昵称是 '{current_nick}',"
+                f"与期望值 '{new_name}' 不一致。\n"
+                f"可能原因:\n"
+                f"  • 当前 OneBot 实现的 set_qq_profile 不支持 nickname (部分实现仅支持签名/头像)\n"
+                f"  • bot 没有修改昵称的权限 (企业账号/被风控)\n"
+                f"  • 修改尚未生效,稍后可用 /QQ昵称 {new_name} 重试一次"
+            )
+            return
+
+        # 读取验证也失败 (API 都不存在等),退化到信任 set_qq_profile 返回
+        yield event.plain_result(
+            f"✅ set_qq_profile 调用成功: {new_name}\n"
+            f"(未能读取当前昵称以验证,请到 QQ 上确认是否生效)"
+        )
+
+    @filter.command("设置头像", alias=["QQ头像", "改头像", "setavatar"])
+    async def cmd_set_qq_avatar(self, event: AstrMessageEvent, args: str = ""):
+        """修改 bot 自身的 QQ 头像
+
+        用法:
+        - 发送图片并附带 /设置头像
+        - 引用一张图片回复 /设置头像 设置
+
+        移植自 astrbot_plugin_qqprofile 的 set_qq_avatar(file=...) 路径。
+        """
+        if self._sender_blocked(event):
+            return
+        if not self._is_admin(event):
+            yield event.plain_result("❌ 仅 Astrbot 内置 bot 主可用")
+            return
+
+        img_url = self._extract_image_url_from_event(event)
+        if not img_url:
+            yield event.plain_result(
+                "⚠️ 需要发送或引用一张图片\n"
+                "用法: 引用图片回复 /设置头像 设置"
+            )
+            return
+
+        try:
+            r = await self._api("set_qq_avatar", event=event, file=img_url)
+        except Exception as e:
+            logger.error(f"set_qq_avatar 调用异常: {e}")
+            yield event.plain_result(
+                f"❌ 修改头像失败: {e}\n"
+                f"请确认当前平台支持 set_qq_avatar action。"
+            )
+            return
+
+        if self._api_ok(r):
+            yield event.plain_result("✅ 我换头像啦~")
+        else:
+            yield event.plain_result(
+                f"❌ 修改头像失败: {self._api_failure_text(r)}\n"
+                f"请确认平台支持 set_qq_avatar,且图片 URL/文件可被协议端访问。"
+            )
+
+    @filter.command("删好友", alias=["deletefriend"])
+    async def cmd_del_friend(self, event: AstrMessageEvent, args: str = ""):
+        if self._sender_blocked(event):
+            return
+        if not self._is_admin(event):
+            yield event.plain_result("❌ 仅管理员可用")
+            return
+
+        uids = self._ids(args)
+        if not uids:
+            yield event.plain_result("⚠️ /删好友 12345 [67890] ...")
+            return
+
+        ok, fail = [], []
+        for u in uids:
+            r = await self._api("delete_friend", event=event, user_id=int(u))
+            if self._api_ok(r):
+                ok.append(u)
+            else:
+                logger.warning(f"删除好友失败: uid={u}, response={r}")
+                fail.append(f"{u}({self._api_failure_text(r)})")
+
+        parts = []
+        if ok:
+            parts.append(f"✅ 已删除 {len(ok)} 人: {', '.join(ok)}")
+        if fail:
+            parts.append(f"❌ 失败: {', '.join(fail)}")
+        yield event.plain_result("\n".join(parts) if parts else "❌ 无结果")
+
+    @filter.command("改备注", alias=["remark", "setremark"])
+    async def cmd_set_remark(self, event: AstrMessageEvent, args: str = ""):
+        """修改好友备注
+
+        用法: /改备注 QQ号 备注内容
+        优先使用 OneBot v11 标准 set_friend_remark action;
+        失败或平台不支持时回退到 SnowLuma send_packet 实验路径。
+        """
+        if self._sender_blocked(event):
+            return
+        if not self._is_admin(event):
+            yield event.plain_result("❌ 仅管理员可用")
+            return
+
+        parts = args.strip().split(maxsplit=1)
+        uids = self._ids(args)
+        if not uids or len(parts) < 2:
+            yield event.plain_result("⚠️ /改备注 QQ号 新备注\n例: /改备注 123456789 老王")
+            return
+
+        uid = uids[0]
+        if not self._valid_uid(uid):
+            yield event.plain_result(f"⚠️ QQ号格式无效（需5-12位数字）: {uid}")
+            return
+
+        new_remark = parts[1].strip()
+        if not new_remark:
+            yield event.plain_result("⚠️ 备注内容不能为空")
+            return
+        # 备注长度上限,避免异常 payload
+        if len(new_remark) > 64:
+            yield event.plain_result("⚠️ 备注过长（最多 64 字符）")
+            return
+
+        # 1) 优先: OneBot v11 标准 action
+        try:
+            r = await self._api(
+                "set_friend_remark",
+                event=event,
+                user_id=int(uid),
+                remark=new_remark,
+            )
+            if self._api_ok(r):
+                yield event.plain_result(f"✅ 已修改 {uid} 的备注: {new_remark}")
+                return
+            logger.warning(
+                "set_friend_remark 标准 action 失败: uid=%s, response=%s, fallback to send_packet",
+                uid, r,
+            )
+        except Exception as e:
+            logger.warning(f"set_friend_remark 调用异常,准备回退: {e}")
+
+        # 2) 回退: SnowLuma send_packet 实验路径
+        client = None
+        if hasattr(event, 'bot'):
+            client = event.bot
+        else:
+            for platform in self.context.platform_manager.get_insts():
+                if hasattr(platform, 'get_client'):
+                    client = platform.get_client()
+                    if client:
+                        break
+
+        if not client:
+            yield event.plain_result(
+                "❌ 无法获取客户端,且标准 set_friend_remark 也未成功。"
+                "请检查平台是否支持 OneBot v11 修改好友备注。"
+            )
+            return
+        if ExpansionHandle is None:
+            yield event.plain_result(
+                "❌ 标准 set_friend_remark 不可用,扩展 Packet 模块也未加载,无法修改备注。"
+            )
+            return
+
+        try:
+            ok = await ExpansionHandle.set_friend_remark(
+                client=client,
+                target_uin=int(uid),
+                remark=new_remark,
+            )
+            if ok:
+                yield event.plain_result(f"✅ 已修改 {uid} 的备注: {new_remark}")
+            else:
+                yield event.plain_result(
+                    f"❌ 修改备注失败。set_friend_remark 与 send_packet 均不可用,"
+                    f"或 {uid} 不是你的好友。"
+                )
+        except Exception as e:
+            logger.error(f"改备注失败: uid={uid}, err={e}")
+            yield event.plain_result(
+                f"⚠️ send_packet 调用失败: {e}\n"
+                f"请手动在 QQ 上修改 {uid} 的备注为: {new_remark}"
+            )
+
+    @filter.command("退群", alias=["leavegroup"])
+    async def cmd_leave_group(self, event: AstrMessageEvent, args: str = ""):
+        if self._sender_blocked(event):
+            return
+        if not self._is_admin(event):
+            yield event.plain_result("❌ 仅管理员可用")
+            return
+
+        gids = self._ids(args)
+        if not gids:
+            yield event.plain_result("⚠️ /退群 111222 [333444] ...")
+            return
+
+        ok, fail = [], []
+        for g in gids:
+            r = await self._api("set_group_leave", event=event, group_id=int(g))
+            if self._api_ok(r):
+                ok.append(g)
+            else:
+                logger.warning(f"退群失败: gid={g}, response={r}")
+                fail.append(f"{g}({self._api_failure_text(r)})")
+
+        parts = []
+        if ok:
+            parts.append(f"✅ 已退群 {len(ok)} 个: {', '.join(ok)}")
+        if fail:
+            parts.append(f"❌ 失败: {', '.join(fail)}")
+        yield event.plain_result("\n".join(parts) if parts else "❌ 无结果")
+
+    # ───────── 同意 / 拒绝 / 拉黑（统一审批）─────────
+
+    async def _process_reply(self, event: AstrMessageEvent, action: str, args: str = ""):
+        if self._sender_blocked(event):
+            return
+        if not self._is_admin(event):
+            yield event.plain_result("❌ 仅管理员可用")
+            return
+
+        try:
+            event.stop_event()
+        except Exception:
+            pass
+
+        flag = self._find_flag_from_args(args)
+        reply_id = self._get_reply_id(event) if not flag else None
+        flag = flag or (self._find_flag_by_msg_id(reply_id) if reply_id else None)
+        if not flag:
+            flag = self._find_flag_by_quote_text(event)
+        if not flag and reply_id:
+            flag = await self._find_flag_by_replied_message(event, reply_id)
+        if not flag:
+            synced = await self._sync_snowluma_pending_requests(event)
+            if synced:
+                logger.info(f"审批命令触发 SnowLuma 扩展列表同步: synced={synced}")
+                flag = self._find_flag_from_args(args)
+                if not flag and reply_id:
+                    flag = self._find_flag_by_msg_id(reply_id)
+                if not flag:
+                    flag = self._find_flag_by_quote_text(event)
+                if not flag and reply_id:
+                    flag = await self._find_flag_by_replied_message(event, reply_id)
+        recovered_info = None
+        if not flag:
+            recovered_info = await self._recover_friend_request_from_notice(event, reply_id)
+            if recovered_info:
+                flag = recovered_info["request_flag"]
+                logger.info(
+                    "从引用通知恢复好友申请: flag=%s, uid=%s, nickname=%s",
+                    flag,
+                    recovered_info.get("user_id"),
+                    recovered_info.get("nickname"),
+                )
+        if not flag:
+            recovered_info = await self._recover_group_request_from_notice(event, reply_id)
+            if recovered_info:
+                flag = recovered_info["request_flag"]
+                logger.info(
+                    "从引用通知恢复群邀请: flag=%s, gid=%s, uid=%s",
+                    flag,
+                    recovered_info.get("group_id"),
+                    recovered_info.get("user_id"),
+                )
+        if not flag:
+            if args:
+                yield event.plain_result("❌ 未匹配到对应待处理编号")
+                return
+            if not reply_id:
+                yield event.plain_result("⚠️ 请引用通知消息回复 /同意 或 /拒绝 或 /拉黑，或使用 /同意 编号")
+                return
+            if not self.pending:
+                yield event.plain_result(
+                    "⚠️ 待处理列表为空，无法自动处理该请求。\n"
+                    "该请求可能已过期或被处理过，请直接在QQ中操作。"
+                )
+                return
+            yield event.plain_result("❌ 该引用消息未匹配到待处理请求")
+            return
+
+        info = self.pending.get(flag) or recovered_info
+        if not info:
+            yield event.plain_result("❌ 该请求已过期或已处理")
+            return
+
+        uid = info.get("user_id", "")
+        kind = "好友申请" if info["type"] == "friend" else "群邀请"
+        if info["type"] == "friend":
+            nickname = info.get("nickname", uid)
+            id_label = "UID" if info.get("snowluma_doubt") else "QQ号"
+            target = f"昵称：{nickname}\n{id_label}：{uid}"
+        else:
+            inviter_nickname = info.get('inviter_nickname', uid)
+            group_name = info.get('group_name', info.get('group_id', '?'))
+            target = f"群：{group_name}\n邀请人：{inviter_nickname}"
+
+        if action == "block":
+            try:
+                if info["type"] == "friend":
+                    api_name = info.get("request_api", "set_friend_add_request")
+                    r = await self._api(
+                        api_name,
+                        event=event,
+                        flag=flag,
+                        approve=False,
+                    )
+                else:
+                    api_name = info.get("request_api", "set_group_add_request")
+                    r = await self._api(
+                        api_name, event=event, flag=flag, approve=False,
+                        sub_type=info.get("sub_type", "invite"),
+                    )
+            except Exception as e:
+                logger.error(f"拒绝 {flag} 异常: {e}")
+                yield event.plain_result("❌ 操作异常，请查看日志")
+                return
+
+            if not self._api_ok(r):
+                wording = ""
+                if isinstance(r, dict):
+                    wording = str(r.get("wording", "") or r.get("message", ""))
+                if "already" in wording.lower():
+                    # 请求已被处理，仍拉黑该用户
+                    if uid and uid != "0":
+                        await self._add_to_blacklist(uid)
+                    async with self._lock:
+                        self.pending.pop(flag, None)
+                        self._save(self.pd_file, self.pending)
+                    yield event.plain_result(
+                        f"🚫 该{kind}已被处理过\n{target}\n已加入黑名单"
+                    )
+                    return
+                detail = self._api_failure_text(r)
+                logger.warning(f"拒绝并拉黑失败: api={api_name}, flag={flag}, response={r}")
+                if info.get("recovered_from_notice"):
+                    # 从通知恢复的请求，API可能失败但仍拉黑该用户
+                    if uid and uid != "0":
+                        await self._add_to_blacklist(uid)
+                    async with self._lock:
+                        self.pending.pop(flag, None)
+                        self._save(self.pd_file, self.pending)
+                    yield event.plain_result(
+                        f"⚠️ 自动处理失败，已将用户加入黑名单\n"
+                        f"{detail}\n{target}\n"
+                        f"该请求可能已过期，请直接在QQ中操作"
+                    )
+                else:
+                    yield event.plain_result(f"❌ 拒绝请求失败，未写入黑名单\n{detail}")
+                return
+
+            # 修复3: _add_to_blacklist 现在是 async，加 await
+            if uid and uid != "0":
+                await self._add_to_blacklist(uid)
+
+            async with self._lock:
+                self.pending.pop(flag, None)
+                self._save(self.pd_file, self.pending)
+
+            yield event.plain_result(
+                f"🚫 已拒绝{kind}并拉黑\n{target}\n"
+                f"该用户后续所有好友申请和群邀请将被自动拒绝"
+            )
+            return
+
+        approve = (action == "accept")
+        try:
+            if info["type"] == "friend":
+                api_name = info.get("request_api", "set_friend_add_request")
+                r = await self._api(
+                    api_name,
+                    event=event,
+                    flag=flag,
+                    approve=approve,
+                )
+            else:
+                api_name = info.get("request_api", "set_group_add_request")
+                r = await self._api(
+                    api_name, event=event, flag=flag, approve=approve,
+                    sub_type=info.get("sub_type", "invite"),
+                )
+
+            if self._api_ok(r):
+                async with self._lock:
+                    self.pending.pop(flag, None)
+                    self._save(self.pd_file, self.pending)
+
+                act_text = "同意" if approve else "拒绝"
+                yield event.plain_result(f"✅ 已{act_text}{kind}\n{target}")
+            else:
+                wording = ""
+                if isinstance(r, dict):
+                    wording = str(r.get("wording", "") or r.get("message", ""))
+                # 请求已被处理（对方已同意/QQ自动处理等）
+                if "already" in wording.lower():
+                    async with self._lock:
+                        self.pending.pop(flag, None)
+                        self._save(self.pd_file, self.pending)
+                    yield event.plain_result(f"ℹ️ 该{kind}已被处理过\n{target}")
+                else:
+                    detail = self._api_failure_text(r)
+                    logger.warning(
+                        "处理请求失败: api=%s, flag=%s, approve=%s, info=%s, response=%s",
+                        api_name,
+                        flag,
+                        approve,
+                        info,
+                        r,
+                    )
+                    if info.get("recovered_from_notice"):
+                        yield event.plain_result(
+                            f"❌ 从通知消息恢复的请求处理失败\n"
+                            f"{detail}\n"
+                            f"该请求可能已过期，请直接在QQ中操作"
+                        )
+                    else:
+                        yield event.plain_result(f"❌ 操作失败，平台返回异常\n{detail}")
+        except Exception as e:
+            logger.error(f"处理 {flag} 异常: {e}")
+            yield event.plain_result("❌ 操作异常，请查看日志")
+
+    @filter.command("同意", alias=["accept"], priority=1, block=True)
+    async def cmd_accept(self, event: AstrMessageEvent, args: str = ""):
+        async for result in self._process_reply(event, action="accept", args=args):
+            yield result
+
+    @filter.command("拒绝", alias=["reject"], priority=1, block=True)
+    async def cmd_reject(self, event: AstrMessageEvent, args: str = ""):
+        async for result in self._process_reply(event, action="reject", args=args):
+            yield result
+
+    @filter.command("拉黑请求", alias=["blockreply"], priority=1, block=True)
+    async def cmd_block_reply(self, event: AstrMessageEvent, args: str = ""):
+        async for result in self._process_reply(event, action="block", args=args):
+            yield result
+
+    # ───────── 群黑名单管理命令 ─────────
+
+    @filter.command("拉黑群", alias=["addblg"])
+    async def cmd_bl_add_group(self, event: AstrMessageEvent, args: str = ""):
+        if self._sender_blocked(event):
+            return
+        if not self._is_admin(event):
+            yield event.plain_result("❌ 仅管理员可用")
+            return
+
+        gids = self._ids(args)
+        if not gids:
+            yield event.plain_result("⚠️ /拉黑群 群号1 [群号2] ...")
+            return
+
+        valid, invalid = [], []
+        for g in gids:
+            if self._valid_gid(g):
+                valid.append(g)
+            else:
+                invalid.append(g)
+
+        if invalid:
+            yield event.plain_result(f"⚠️ 群号格式无效（需5-12位数字）: {', '.join(invalid)}")
+            if not valid:
+                return
+
+        async with self._lock:
+            group_bl_key = "group_blacklist"
+            group_blacklist = self.blacklist.get(group_bl_key, {})
+            added, dup = [], []
+
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for g in valid:
+                if str(g) in group_blacklist:
+                    dup.append(g)
+                else:
+                    group_blacklist[str(g)] = {"time": now}
+                    added.append(g)
+
+            self.blacklist[group_bl_key] = group_blacklist
+            self._save(self.bl_file, self.blacklist)
+
+        parts = []
+        if added:
+            parts.append(f"✅ 已拉黑 {len(added)} 个群: {', '.join(added)}")
+        if dup:
+            parts.append(f"⚠️ 已存在: {', '.join(dup)}")
+        yield event.plain_result("\n".join(parts))
+
+    @filter.command("解封群", alias=["rmblg"])
+    async def cmd_bl_rm_group(self, event: AstrMessageEvent, args: str = ""):
+        if self._sender_blocked(event):
+            return
+        if not self._is_admin(event):
+            yield event.plain_result("❌ 仅管理员可用")
+            return
+
+        gids = self._ids(args)
+        if not gids:
+            yield event.plain_result("⚠️ /解封群 群号1 [群号2] ...")
+            return
+
+        async with self._lock:
+            group_bl_key = "group_blacklist"
+            group_blacklist = self.blacklist.get(group_bl_key, {})
+            removed, miss = [], []
+
+            for g in gids:
+                if str(g) in group_blacklist:
+                    del group_blacklist[str(g)]
+                    removed.append(g)
+                else:
+                    miss.append(g)
+
+            self.blacklist[group_bl_key] = group_blacklist
+            self._save(self.bl_file, self.blacklist)
+
+        parts = []
+        if removed:
+            parts.append(f"✅ 已解封 {len(removed)} 个群: {', '.join(removed)}")
+        if miss:
+            parts.append(f"⚠️ 不存在: {', '.join(miss)}")
+        yield event.plain_result("\n".join(parts))
+
+    # ───────── 通知群设置 ─────────
+
+    @filter.command("通知群", alias=["setnotify", "setgroup"])
+    async def cmd_set_notify_group(self, event: AstrMessageEvent, args: str = ""):
+        if self._sender_blocked(event):
+            return
+        if not self._is_admin(event):
+            yield event.plain_result("❌ 仅管理员可用")
+            return
+
+        arg = args.strip()
+        if not arg or arg == "查看":
+            if self.notify_group:
+                yield event.plain_result(f"📢 当前通知群: {self.notify_group}")
+            else:
+                yield event.plain_result("📢 当前未设置通知群（通知发送给管理员私聊）")
+            return
+
+        if arg in ("取消", "清空", "关闭", "none", "null", "off"):
+            self.notify_group = None
+            config = self.context.get_config()
+            config["notify_group"] = None
+            self.context.set_config(config)
+            yield event.plain_result("✅ 已取消通知群，通知将发送给管理员私聊")
+            return
+
+        gids = self._ids(arg)
+        if not gids:
+            yield event.plain_result("⚠️ /通知群 123456  或  /通知群 取消")
+            return
+
+        gid = gids[0]
+        if not self._valid_gid(gid):
+            yield event.plain_result(f"⚠️ 群号格式无效（需5-12位数字）: {gid}")
+            return
+
+        self.notify_group = gid
+        config = self.context.get_config()
+        config["notify_group"] = gid
+        self.context.set_config(config)
+        yield event.plain_result(f"✅ 通知群已设置为: {gid}\n后续好友申请和群邀请通知将发送到该群")
+
+    # ───────── 抽查命令 ─────────
+
+    @filter.command("抽查", alias=["spotcheck"])
+    async def cmd_spot_check(self, event: AstrMessageEvent, args: str = ""):
+        """
+        抽查命令: 向 bot 主转发指定用户或群的最近 N 条聊天记录。
+
+        用法:
+          /抽查 {QQ号} {数量}   — 获取 bot 与该用户的私聊记录
+          /抽查 {群号} {数量}   — 获取该群的最近聊天记录
+
+        数量上限 100。若未缓存到该目标的历史记录，将返回空。
+        转发以合并转发消息发送；若平台不支持，回退为纯文本。
+        """
+        if not self._is_admin(event):
+            yield event.plain_result("❌ 仅管理员可用")
+            return
+
+        parts = args.strip().split()
+        if len(parts) < 2:
+            yield event.plain_result(
+                "⚠️ /抽查 {QQ号/群号} {数量}\n"
+                "例: /抽查 123456789 20\n"
+                "   /抽查 987654321 50"
+            )
+            return
+
+        target_id = parts[0].strip()
+        if not re.fullmatch(r"\d{5,12}", target_id):
+            yield event.plain_result("⚠️ QQ号/群号格式无效（需5-12位数字）")
+            return
+
+        try:
+            count = max(1, min(100, int(parts[1])))
+        except ValueError:
+            yield event.plain_result("⚠️ 数量须为正整数，最大 100")
+            return
+
+        # 获取聊天记录并自动检测类型
+        result = await self._get_target_history(target_id, count)
+        if result is None:
+            yield event.plain_result(
+                f"⚠️ 未找到 {target_id} 的聊天记录缓存\n"
+                f"（Bot 启动后收到的聊天才会被缓存，且缓存上限为内存保存，重启后清空）"
+            )
+            return
+        history, is_group = result
+
+        if not history:
+            target_type = "群" if is_group else "用户"
+            yield event.plain_result(f"📋 {target_type} {target_id} 暂无缓存记录")
+            return
+
+        # 构建合并转发节点 & 纯文本回退
+        target_type = "群" if is_group else "用户"
+        scope = f"{target_type} {target_id}"
+        nodes = self._build_forward_nodes(
+            history,
+            target_id,
+            empty_hint=f"{target_type} {target_id} 暂无可转发的聊天记录",
+        )
+        fallback_text = self._history_to_text(history, target_id, scope=scope)
+
+        # 尝试发送合并转发
+        sent = False
+        client = self._get_client(event)
+        if client:
+            try:
+                if self.notify_group:
+                    if is_group:
+                        res = await self._api(
+                            "send_group_forward_msg",
+                            event=event,
+                            group_id=int(self.notify_group),
+                            messages=nodes,
+                        )
+                    else:
+                        res = await self._api(
+                            "send_private_forward_msg",
+                            event=event,
+                            user_id=int(self.notify_group),
+                            messages=nodes,
+                        )
+                    sent = self._api_ok(res)
+                else:
+                    for aid in self._get_admins():
+                        res = await self._api(
+                            "send_private_forward_msg",
+                            event=event,
+                            user_id=int(aid),
+                            messages=nodes,
+                        )
+                        if self._api_ok(res):
+                            sent = True
+                            break
+            except Exception as e:
+                logger.error(f"抽查转发异常: {e}")
+
+        if sent:
+            yield event.plain_result(
+                f"✅ 已将 {target_type} {target_id} 最近 {len(history)} 条记录转发"
+            )
+        else:
+            await self._notify(
+                f"⚠️ 平台不支持合并转发或发送失败，已改为文本摘要：\n{fallback_text}"
+            )
+            yield event.plain_result(
+                f"⚠️ 合并转发失败，已用文本摘要发送到通知渠道"
+            )
+
+    # ───────── 生命周期 ─────────
+
+    async def terminate(self):
+        logger.info("关系管理插件已停止")
+

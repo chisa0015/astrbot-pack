@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>菜单编辑器 v1.9.5</title>
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <link rel="stylesheet" href="/static/style.css?v=1.9.5">
+</head>
+<body>
+
+<div class="sidebar">
+    <div class="sidebar-header-top">
+        <label>当前编辑菜单</label>
+        <div style="display:flex; gap:5px; margin-bottom:5px;">
+            <select id="menuSelect" onchange="switchMenu(this.value)" style="flex:1"></select>
+            <button class="icon-btn" onclick="createNewMenu()" title="新建空白菜单">+</button>
+
+            <!-- 新增：导入模版包 -->
+            <button class="icon-btn" onclick="document.getElementById('importPackInput').click()" title="导入模板包 (Zip)">📦</button>
+            <input type="file" id="importPackInput" hidden accept=".zip" onchange="importTemplatePack(this)">
+
+            <button class="icon-btn" onclick="openAutoFillModal()" title="自动填充指令" style="color: #64b5f6;">⚡</button>
+        </div>
+        <div style="display:flex; gap:5px; margin-bottom:5px;">
+            <input id="menuNameInput" placeholder="名称" oninput="updateMenuMeta('name', this.value)" style="flex:1">
+            <button class="icon-btn" id="enableBtn" onclick="toggleEnable()">启用</button>
+            <button class="icon-btn" onclick="duplicateMenu()" title="复制当前模板">📑</button>
+            <button class="icon-btn" style="color:#f56c6c; border-color:#f56c6c" onclick="deleteMenu()" title="删除">🗑️</button>
+        </div>
+        <!-- 新增：触发词设置 -->
+        <div>
+            <input id="triggerKeywordsInput" placeholder="自定义触发词 (逗号分隔，为空则使用全局正则)" oninput="updateMenuMeta('trigger_keywords', this.value)" style="width:100%; border:1px solid #444; background:#222; color:#ccc; font-size:10px; padding:10px;">
+        </div>
+    </div>
+
+    <div id="propPanel" class="sidebar-content" style="display:none; background:#252526;">
+        <div class="sidebar-header" style="background:#2d2d2d; margin-bottom:15px; border-bottom:1px solid #000;">
+            <div style="display:flex; justify-content:space-between; align-items:center; width:100%">
+                <h3 id="propTitle">🎨 元素属性</h3>
+                <button class="btn btn-secondary" style="font-size:12px; padding:4px 8px;" onclick="clearSelection()">返回全局设置</button>
+            </div>
+            <div id="propDesc" style="font-size:12px; color:#888; margin-top:5px;"></div>
+        </div>
+        <div id="propContent" style="padding: 0 15px;"></div>
+    </div>
+
+    <div id="globalPanel" class="sidebar-content">
+        <div class="sidebar-header">
+            <h3>🛠️ 全局配置</h3>
+            <div style="display:flex; gap:5px;">
+                <button class="btn btn-secondary" onclick="exportImage()">📷 导出图</button>
+                <button class="btn btn-secondary" onclick="exportTemplatePack()">📦 导出包</button>
+                <button class="btn btn-primary" onclick="saveAll()">💾 保存</button>
+            </div>
+        </div>
+
+        <div style="padding:20px;">
+            <div class="section">
+                <div class="section-title">画布与布局</div>
+                <div class="form-row">
+                    <label>画布模式</label>
+                    <select id="canvasMode" onchange="updateMenuMeta('use_canvas_size', this.value)">
+                        <option value="false">↕️ 自动高度 (宽度固定)</option>
+                        <option value="true">🔲 自定义固定尺寸</option>
+                    </select>
+                </div>
+                <div class="form-grid-2">
+                    <div><label>宽 (只能1000)</label><input type="number" id="cvsW" oninput="updateMenuMeta('canvas_width', this.value)"></div>
+                    <div><label>高 (px)</label><input type="number" id="cvsH" oninput="updateMenuMeta('canvas_height', this.value)"></div>
+                </div>
+
+                <div class="form-row">
+                    <label>📺 导出分辨率 (0.1 - 2.0)</label>
+                    <div style="display:flex; align-items:center; gap:5px;">
+                        <input type="number" step="0.1" min="0.1" id="expScaleInput"
+                               oninput="updateMenuMeta('export_scale', this.value)"
+                               placeholder="1.0" style="flex:1">
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <label>默认每行列数 (Grid模式)</label>
+                    <input type="number" id="columnInput" oninput="updateMenuMeta('layout_columns', this.value)" placeholder="默认为 3">
+                </div>
+                <div class="form-row"><label>底色</label><div class="color-picker-row"><input type="color" id="cvsColorP" oninput="updateColor('canvas_color', this.value, 'pick')"><input type="text" id="cvsColorT" class="color-value" oninput="updateColor('canvas_color', this.value, 'text')"></div></div>
+
+                <!-- 背景设置区域 -->
+                <div class="section-title" style="margin-top:20px;">背景设置</div>
+
+                <div class="form-row">
+                    <label>背景模式</label>
+                    <select id="bgType" onchange="updateMenuMeta('bg_type', this.value); toggleBgPanel();">
+                        <option value="image">🖼️ 静态图片 (PNG)</option>
+                        <option value="video">🎥 动态视频 (APNG/WebP)</option>
+                    </select>
+                </div>
+
+                <!-- 通用背景布局控制 (新增) -->
+                <div style="background:#2b2b2b; padding:10px; border-radius:4px; margin-bottom:15px; border:1px solid #444;">
+                    <label style="color:#888;font-size:11px;margin-bottom:8px;display:block;text-transform:uppercase;">📐 布局与对齐 (通用)</label>
+
+                    <div class="form-row">
+                        <label>适应模式</label>
+                        <select id="bgFit" onchange="updateMenuMeta('bg_fit_mode', this.value); toggleBgCustomInputs();">
+                            <option value="cover">✨ 智能填满 (Cover)</option>
+                            <option value="cover_w">↔️ 宽度填满 (Cover Width)</option>
+                            <option value="cover_h">↕️ 高度填满 (Cover Height)</option>
+                            <option value="contain">🔲 完整显示 (Contain)</option>
+                            <option value="custom">🛠 自定义尺寸</option>
+                        </select>
+                    </div>
+
+                    <div id="bg-custom-size-inputs" style="display:none; margin-bottom:10px; background:#222; padding:5px; border-radius:4px;">
+                        <div class="form-grid-2" style="margin-bottom:0">
+                            <div><label>强制宽(px)</label><input type="number" id="bgCustomW" oninput="updateMenuMeta('bg_custom_width', this.value)"></div>
+                            <div><label>强制高(px)</label><input type="number" id="bgCustomH" oninput="updateMenuMeta('bg_custom_height', this.value)"></div>
+                        </div>
+                    </div>
+
+                    <div class="form-grid-2">
+                        <div>
+                            <label>水平对齐 (X)</label>
+                            <select id="bgAlignX" onchange="updateUnifiedBgParams('align_x', this.value)">
+                                <option value="center">居中 (Center)</option>
+                                <option value="left">居左 (Left)</option>
+                                <option value="right">居右 (Right)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label>垂直对齐 (Y)</label>
+                            <select id="bgAlignY" onchange="updateUnifiedBgParams('align_y', this.value)">
+                                <option value="center">居中 (Center)</option>
+                                <option value="top">顶部 (Top)</option>
+                                <option value="bottom">底部 (Bottom)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-row" style="margin-bottom:0;">
+                        <label>🔍 背景缩放 (Zoom) <span id="bgScaleVal" style="float:right;color:#aaa;font-family:monospace">1.0</span></label>
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <input type="range" min="0.1" max="3.0" step="0.1" id="bgScaleRange"
+                                   oninput="updateUnifiedBgParams('scale', this.value)" style="flex:1">
+                            <input type="number" step="0.1" id="bgScaleInput"
+                                   oninput="updateUnifiedBgParams('scale', this.value)" style="width:50px; text-align:center;">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 图片专用面板 -->
+                <div id="panel-bg-image">
+                    <div class="form-row">
+                        <label>背景自定义大小</label>
+                        <div class="form-grid-2">
+                            <div><label style="font-size:12px;">宽 (px)</label><input type="number" id="bgCustomW" oninput="updateMenuMeta('bg_custom_width', this.value)" placeholder="留空=自适应"></div>
+                            <div><label style="font-size:12px;">高 (px)</label><input type="number" id="bgCustomH" oninput="updateMenuMeta('bg_custom_height', this.value)" placeholder="留空=自适应"></div>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <label>选择背景图片</label>
+                        <div style="display:flex; gap:5px; align-items:center;">
+                            <div id="bgSelectPreview" style="flex:1;"></div>
+                            <button class="btn btn-secondary" onclick="document.getElementById('bgUp').click()" title="上传新背景">⬆</button>
+                            <input type="file" id="bgUp" hidden multiple onchange="uploadFile('background', this)">
+                        </div>
+                    </div>
+                    <!-- 随机背景功能 -->
+                    <div style="background:#2b2b2b; padding:10px; border-radius:4px; margin-top:10px; border:1px solid #444;">
+                        <label style="color:#888;font-size:11px;margin-bottom:8px;display:block;">🎲 随机背景 (每次触发随机选择)</label>
+                        <div id="randomBgList" style="max-height:150px; overflow-y:auto; margin-bottom:8px;"></div>
+                        <button class="btn btn-secondary btn-block" onclick="openRandomBgModal()">✏️ 编辑随机背景列表</button>
+                    </div>
+                </div>
+
+                <!-- 视频专用面板 -->
+                <div id="panel-bg-video" style="display:none;">
+                    <div class="form-row">
+                        <label>选择视频</label>
+                        <div style="display:flex; gap:5px;">
+                            <select id="vidSelect" onchange="updateMenuMeta('bg_video', this.value); renderCanvas(getCurrentMenu());" style="flex:1"></select>
+                            <button class="btn btn-secondary" onclick="document.getElementById('vidUp').click()">⬆</button>
+                            <!-- multiple -->
+                            <input type="file" id="vidUp" hidden accept="video/*" multiple onchange="uploadFile('video', this)">
+                        </div>
+                    </div>
+
+                    <div style="border-top:1px solid #444; margin:10px 0; padding-top:10px;">
+                         <label style="font-size:11px;color:#aaa;margin-bottom:5px;">⏱️ 时间截取 (秒)</label>
+                         <div class="form-grid-2">
+                            <div><label>开始</label><input type="number" step="0.1" id="vStart" oninput="updateMenuMeta('video_start', this.value)" placeholder="0.0"></div>
+                            <div><label>结束 (0=自动)</label><input type="number" step="0.1" id="vEnd" oninput="updateMenuMeta('video_end', this.value)" placeholder="10.0"></div>
+                        </div>
+                    </div>
+
+                    <div class="form-grid-2">
+                        <div>
+                            <label>FPS (建议10-12)</label>
+                            <input type="number" id="vFps" oninput="updateMenuMeta('video_fps', this.value)" placeholder="10">
+                        </div>
+                        <div>
+                            <label>导出格式</label>
+                            <select id="vFormat" onchange="updateMenuMeta('video_export_format', this.value)">
+                                <option value="webp">WebP (推荐)</option>
+                                <option value="apng">APNG (高清)</option>
+                                <option value="gif">GIF (较差)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-title">文本阴影 (Shadow) <input type="checkbox" id="shadowEn" onclick="updateMenuMeta('shadow_enabled', this.checked)"></div>
+                <div class="form-row"><label>阴影颜色</label><div class="color-picker-row"><input type="color" id="shadowColP" oninput="updateColor('shadow_color', this.value, 'pick')"><input type="text" id="shadowColT" class="color-value" oninput="updateColor('shadow_color', this.value, 'text')"></div></div>
+                <div class="form-grid-2">
+                    <div><label>偏移 X</label><input type="number" id="shadowX" oninput="updateMenuMeta('shadow_offset_x', this.value)"></div>
+                    <div><label>偏移 Y</label><input type="number" id="shadowY" oninput="updateMenuMeta('shadow_offset_y', this.value)"></div>
+                </div>
+                <div class="form-row"><label>模糊半径</label><input type="range" min="0" max="20" id="shadowR" oninput="updateMenuMeta('shadow_radius', this.value)"></div>
+            </div>
+
+            <div class="section">
+                <div class="section-title">默认样式设置</div>
+                <div class="form-row"><label>1️⃣ 分组背景 (大框)</label><div class="form-grid-2"><input type="color" id="boxColor" oninput="updateMenuMeta('group_bg_color', this.value)"><input type="number" id="boxBlur" oninput="updateMenuMeta('group_blur_radius', this.value)" placeholder="模糊"></div><input type="range" min="0" max="255" id="boxAlpha" oninput="updateMenuMeta('group_bg_alpha', this.value); document.getElementById('alphaVal').innerText=this.value"><span id="alphaVal" style="float:right;font-size:10px">50</span></div>
+                <div class="form-row"><label>2️⃣ 功能项背景 (小框)</label><div class="form-grid-2"><input type="color" id="iboxColor" oninput="updateMenuMeta('item_bg_color', this.value)"><input type="number" id="iboxBlur" oninput="updateMenuMeta('item_blur_radius', this.value)" placeholder="模糊"></div><input type="range" min="0" max="255" id="iboxAlpha" oninput="updateMenuMeta('item_bg_alpha', this.value); document.getElementById('ialphaVal').innerText=this.value"><span id="ialphaVal" style="float:right;font-size:10px">20</span></div>
+            </div>
+
+            <div class="section">
+                <div class="section-title">元素自定义大小 (默认值)</div>
+                <div class="form-row"><label>分组默认大小</label><div class="form-grid-2"><div><label style="font-size:12px;">宽 (px)</label><input type="number" id="groupCustomW" oninput="updateMenuMeta('group_custom_width', this.value)" placeholder="留空=自适应"></div><div><label style="font-size:12px;">高 (px)</label><input type="number" id="groupCustomH" oninput="updateMenuMeta('group_custom_height', this.value)" placeholder="留空=自适应"></div></div></div>
+                <div class="form-row"><label>功能项默认大小</label><div class="form-grid-2"><div><label style="font-size:12px;">宽 (px)</label><input type="number" id="itemCustomW" oninput="updateMenuMeta('item_custom_width', this.value)" placeholder="留空=自适应"></div><div><label style="font-size:12px;">高 (px)</label><input type="number" id="itemCustomH" oninput="updateMenuMeta('item_custom_height', this.value)" placeholder="留空=自适应"></div></div></div>
+            </div>
+
+            <div class="section">
+                <div class="section-title">全局配色 (默认值)</div>
+                <div class="form-row"><label>🎨 主标题颜色</label><div class="color-picker-row"><input type="color" id="cTitleP" oninput="updateColor('title_color', this.value, 'pick')"><input type="text" id="cTitleT" class="color-value" oninput="updateColor('title_color', this.value, 'text')"></div></div>
+                <div class="form-row"><label>🎨 副标题颜色</label><div class="color-picker-row"><input type="color" id="cSubP" oninput="updateColor('subtitle_color', this.value, 'pick')"><input type="text" id="cSubT" class="color-value" oninput="updateColor('subtitle_color', this.value, 'text')"></div></div>
+                <div class="form-row"><label>🎨 分组标题颜色</label><div class="color-picker-row"><input type="color" id="cGTitleP" oninput="updateColor('group_title_color', this.value, 'pick')"><input type="text" id="cGTitleT" class="color-value" oninput="updateColor('group_title_color', this.value, 'text')"></div></div>
+                <div class="form-row"><label>🎨 分组副标题颜色</label><div class="color-picker-row"><input type="color" id="cGSubP" oninput="updateColor('group_sub_color', this.value, 'pick')"><input type="text" id="cGSubT" class="color-value" oninput="updateColor('group_sub_color', this.value, 'text')"></div></div>
+                <div class="form-row"><label>🎨 功能名颜色</label><div class="color-picker-row"><input type="color" id="cItemNameP" oninput="updateColor('item_name_color', this.value, 'pick')"><input type="text" id="cItemNameT" class="color-value" oninput="updateColor('item_name_color', this.value, 'text')"></div></div>
+                <div class="form-row"><label>🎨 描述文字颜色</label><div class="color-picker-row"><input type="color" id="cItemDescP" oninput="updateColor('item_desc_color', this.value, 'pick')"><input type="text" id="cItemDescT" class="color-value" oninput="updateColor('item_desc_color', this.value, 'text')"></div></div>
+            </div>
+
+            <div class="section">
+                <div class="section-title">全局字体 (默认值)</div>
+                <div class="form-row"><label>主标题字体</label><select id="fTitle" onchange="updateMenuMeta('title_font', this.value)"></select></div>
+                <div class="form-row"><label>副标题字体</label><select id="fSubtitle" onchange="updateMenuMeta('subtitle_font', this.value)"></select></div>
+                <div class="form-row"><label>分组标题字体</label><select id="fGTitle" onchange="updateMenuMeta('group_title_font', this.value)"></select></div>
+                <div class="form-row"><label>分组副标题字体</label><select id="fGSub" onchange="updateMenuMeta('group_sub_font', this.value)"></select></div>
+
+                <!-- 纯文本分组背景效果 -->
+                <div class="section-title" style="margin-top:15px;">纯文本分组背景效果</div>
+                <div class="form-row"><label>🎨 背景颜色</label><div class="color-picker-row"><input type="color" id="cTextBgP" oninput="updateColor('group_sub_bg_color', this.value, 'pick')"><input type="text" id="cTextBgT" class="color-value" oninput="updateColor('group_sub_bg_color', this.value, 'text')"></div></div>
+                <div class="form-grid-2">
+                    <div><label>背景透明度</label><input type="range" min="0" max="255" id="textBgAlpha" oninput="updateMenuMeta('group_sub_bg_alpha', this.value)" value="200"></div>
+                    <div><label>模糊半径</label><input type="number" min="0" max="15" id="textBgBlur" oninput="updateMenuMeta('group_sub_bg_blur', this.value)" placeholder="5"></div>
+                </div>
+
+                <!-- 新增全局副标题对齐 -->
+                <div class="form-row" style="margin-top:15px;"><label>分组副标题默认对齐</label>
+                    <select id="fGSubAlign" onchange="updateMenuMeta('group_sub_align', this.value)">
+                        <option value="bottom">底对齐 (Bottom)</option>
+                        <option value="center">居中 (Center)</option>
+                        <option value="top">顶对齐 (Top)</option>
+                    </select>
+                </div>
+
+                <div class="form-row"><label>功能名字体</label><select id="fIName" onchange="updateMenuMeta('item_name_font', this.value)"></select></div>
+                <div class="form-row"><label>功能描述字体</label><select id="fIDesc" onchange="updateMenuMeta('item_desc_font', this.value)"></select></div>
+                <button class="btn btn-secondary btn-block" style="margin-top:5px" onclick="document.getElementById('fontUp').click()">📤 上传新字体</button>
+                <!-- multiple -->
+                <input type="file" id="fontUp" hidden accept=".ttf,.otf" multiple onchange="uploadFile('font', this)">
+            </div>
+
+            <div class="section">
+                <div class="section-title">分组管理 <button class="icon-btn" onclick="addGroup()">+</button></div>
+                <div id="groupList"></div>
+            </div>
+
+            <div class="section">
+                <div class="section-title">装饰组件 <button class="icon-btn" onclick="addWidget('text')">+T</button> <button class="icon-btn" onclick="addWidget('image')">+I</button></div>
+                <div id="widgetEditor" style="display:none; background:#333; padding:10px; border-radius:4px; margin-top:5px;">
+                    <div id="wEdit-text" style="display:none">
+                        <input id="widText" oninput="updateWidget('text', this.value)" style="margin-bottom:5px;width:100%">
+                        <div style="margin-bottom:5px;">
+                            <label style="font-size:10px;color:#aaa">字体</label>
+                            <select id="widFontSelect" onchange="updateWidget('font', this.value)" style="width:100%"></select>
+                        </div>
+                        <div style="display:flex;gap:5px">
+                            <input type="number" id="widSize" oninput="updateWidget('size', this.value)" style="width:60px" placeholder="Size">
+                            <input type="color" id="widColor" oninput="updateWidget('color', this.value)" style="width:40px">
+                        </div>
+                    </div>
+                    <div id="wEdit-image" style="display:none">
+                        <div style="display:flex;gap:5px;align-items:center;">
+                            <div id="widImgSelectPreview" style="flex:1;"></div>
+                            <button class="btn btn-secondary" onclick="document.getElementById('widImgUp').click()">⬆</button>
+                            <input type="file" id="widImgUp" hidden multiple onchange="uploadFile('widget_img', this)">
+                        </div>
+                        <div style="display:flex;gap:5px;margin-top:5px"><input type="number" id="widW" oninput="updateWidget('width', this.value)" placeholder="宽度"><input type="number" id="widH" oninput="updateWidget('height', this.value)" placeholder="高度"></div>
+                    </div>
+                    <button class="btn btn-danger btn-block" style="margin-top:5px" onclick="deleteWidget()">删除组件</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="workspace">
+    <div id="canvas-wrapper" class="canvas-wrapper">
+        <!-- 背景预览层 -->
+        <div id="bg-preview-layer" style="position: absolute; width: 100%; height: 100%; z-index: 0; overflow: hidden;">
+            <video id="canvas-video-preview" loop autoplay muted playsinline style="display:none;"></video>
+            <div id="canvas-img-preview" style="display:none; width:100%; height:100%;"></div>
+        </div>
+        <div id="canvas" class="canvas" style="position: relative; z-index: 1;"></div>
+    </div>
+</div>
+
+<!-- 自动填充弹窗 -->
+<div id="autoFillModal" class="modal-overlay">
+    <div class="modal" style="width: 500px;">
+        <h3>⚡ 自动填充指令</h3>
+        <p style="color:#aaa; font-size:12px; margin-bottom:15px;">从已安装的 AstrBot 插件中选择指令导入到当前菜单。</p>
+        <div id="pluginList" style="max-height: 300px; overflow-y: auto; margin-bottom: 20px; border: 1px solid #444; padding: 10px; border-radius: 4px;">
+            <div style="text-align:center; color:#888;">正在加载指令...</div>
+        </div>
+        <div style="display:flex; justify-content: flex-end; gap: 10px;">
+            <button class="btn btn-secondary" onclick="document.getElementById('autoFillModal').style.display='none'">取消</button>
+            <button class="btn btn-primary" onclick="confirmAutoFill()">导入选中项</button>
+        </div>
+    </div>
+</div>
+
+<!-- 随机背景选择弹窗 -->
+<div id="randomBgModal" class="modal-overlay">
+    <div class="modal" style="width: 500px;">
+        <h3>🎲 编辑随机背景列表</h3>
+        <p style="color:#aaa; font-size:12px; margin-bottom:15px;">勾选多张背景图片，每次触发菜单时随机选择一张显示。</p>
+        <div id="randomBgCheckList" style="max-height: 300px; overflow-y: auto; margin-bottom: 20px; border: 1px solid #444; padding: 10px; border-radius: 4px; display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+        </div>
+        <div style="display:flex; justify-content: flex-end; gap: 10px;">
+            <button class="btn btn-secondary" onclick="document.getElementById('randomBgModal').style.display='none'">取消</button>
+            <button class="btn btn-primary" onclick="confirmRandomBgSelection()">确定</button>
+        </div>
+    </div>
+</div>
+
+<!-- 通用图片选择器弹窗 -->
+<div id="imagePickerModal" class="modal-overlay">
+    <div class="modal" style="width: 600px;">
+        <h3 id="imagePickerTitle">选择图片</h3>
+        <div style="margin-bottom: 10px;">
+            <input type="text" id="imagePickerSearch" placeholder="🔍 搜索图片名称..." oninput="filterImagePicker(this.value)" style="width:100%; padding:8px 12px; border-radius:4px; border:1px solid #444; background:#2a2a2a; color:#fff;">
+        </div>
+        <div id="imagePickerGrid" style="max-height: 350px; overflow-y: auto; margin: 10px 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 10px;">
+        </div>
+        <div style="display:flex; justify-content: flex-end; gap: 10px;">
+            <button class="btn btn-secondary" onclick="closeImagePicker()">取消</button>
+        </div>
+    </div>
+</div>
+
+<script src="/static/editor.js?v=1.9.5"></script>
+</body>
+</html>

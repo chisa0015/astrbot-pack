@@ -1,0 +1,50 @@
+﻿{
+  "master_qq": [
+    "2899675402"
+  ],
+  "title": "主人",
+  "impersonation_guard": true,
+  "memory_enable": true,
+  "note": "",
+  "deny_claim": true,
+  "claim_keywords": [
+    "我是你主人",
+    "你主人是我",
+    "我是主人",
+    "认我为主",
+    "叫我主人",
+    "主人是我",
+    "我是你爹"
+  ],
+  "alias_enable": true,
+  "alias_pool": [],
+  "absence_enable": true,
+  "absence_days": 3,
+  "anniversary_enable": true,
+  "password_enable": false,
+  "password_word": "",
+  "password_note": "",
+  "defend_enable": false,
+  "defend_probability": 0.1,
+  "defend_cooldown_minutes": 30,
+  "defend_note": "",
+  "alias_mode": "daily_random",
+  "debug_enable": false,
+  "answer_master_question": true,
+  "question_keywords": [
+    "你主人是谁",
+    "谁是你主人",
+    "你主人叫什么",
+    "你主人呢",
+    "你主人是哪位",
+    "你主人什么"
+  ],
+  "identity_keywords": [
+    "我是谁",
+    "知道我是谁",
+    "认得我是谁",
+    "知道我是哪位",
+    "我是哪位",
+    "认识我是谁"
+  ]
+}

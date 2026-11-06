@@ -1,0 +1,22 @@
+{
+  "push_enabled": true,
+  "push_time": "21:00",
+  "push_count": 20,
+  "push_targets": [
+    "owner",
+    "aiocqhttp:GroupMessage:996780016",
+    "aiocqhttp:GroupMessage:820569056",
+    "aiocqhttp:GroupMessage:591226146"
+  ],
+  "napcat_ws": "ws://127.0.0.1:3001",
+  "napcat_token": "napcat_ws_1132046",
+  "weekly_push_count": 10,
+  "weekly_push_groups": "all",
+  "weekly_push_time": "21:00",
+  "weekly_push_enabled": true,
+  "weekly_push_day": "sun",
+  "push_times": [
+    "07:00",
+    "19:00"
+  ]
+}

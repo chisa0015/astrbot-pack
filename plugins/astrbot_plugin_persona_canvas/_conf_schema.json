@@ -1,0 +1,31 @@
+{
+  "enable_webui": {
+    "type": "bool",
+    "description": "启用 AstrBot 内嵌随想画卷管理页面",
+    "hint": "在支持 Plugin Pages 的 AstrBot（建议 4.25 或之后的 4.x）插件详情中打开随想画卷。旧版没有页面入口时开启独立兼容 WebUI。业务设置在页面中管理并立即生效。",
+    "default": true
+  },
+  "enable_legacy_webui": {
+    "type": "bool",
+    "description": "同时启用独立兼容 WebUI",
+    "hint": "默认关闭。只有旧版 Dashboard 不支持插件页面，或确实需要独立访问时才开启。与内嵌页面使用同一套前端和设置。",
+    "default": false
+  },
+  "webui_host": {
+    "type": "string",
+    "description": "独立兼容 WebUI 监听地址",
+    "default": "127.0.0.1"
+  },
+  "webui_port": {
+    "type": "int",
+    "description": "独立兼容 WebUI 监听端口",
+    "default": 3018
+  },
+  "webui_token": {
+    "type": "string",
+    "description": "独立兼容 WebUI 访问令牌",
+    "hint": "留空自动生成。管理员在私聊中发送 /生图控制台 获取；内嵌页面直接使用 AstrBot 登录权限。",
+    "default": "",
+    "secret": true
+  }
+}

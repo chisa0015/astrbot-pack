@@ -1,0 +1,6 @@
+﻿{
+    "proxy": "http://127.0.0.1:7890",
+    "work_dir": "D:\\DSK\\BOT\\runtime\\jm",
+    "threads": 16,
+    "keep_days": 3
+}

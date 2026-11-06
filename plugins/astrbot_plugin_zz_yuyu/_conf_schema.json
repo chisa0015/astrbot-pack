@@ -1,0 +1,27 @@
+{
+  "engines": {
+    "description": "引擎组合（逗号分隔）。lens=真人认号，yandex=找出处/补位，saucenao=二次元画作",
+    "type": "string",
+    "default": "lens,yandex"
+  },
+  "timeout_sec": {
+    "description": "单引擎超时秒数（Lens 慢，建议 60）",
+    "type": "int",
+    "default": 60
+  },
+  "max_accounts": {
+    "description": "最多报几个账号",
+    "type": "int",
+    "default": 3
+  },
+  "proxy": {
+    "description": "浏览器/HTTP 出口代理；填 auto 自动扫本机端口（7890/7892/…）",
+    "type": "string",
+    "default": "auto"
+  },
+  "ack_text": {
+    "description": "开工前先回的一句（留空用默认）",
+    "type": "string",
+    "default": "收到，开始找鸡"
+  }
+}

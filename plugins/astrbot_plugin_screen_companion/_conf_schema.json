@@ -1,0 +1,842 @@
+{
+  "bot_name": {
+    "description": "角色名称",
+    "type": "string",
+    "hint": "Bot 在对话、日记和状态里使用的名字。",
+    "default": "屏幕助手"
+  },
+  "system_prompt": {
+    "description": "系统提示词",
+    "type": "text",
+    "hint": "选填，可留空。控制 Bot 的人设、语气和边界；不填就沿用 AstrBot 当前人格。",
+    "default": "",
+    "editor_mode": true,
+    "editor_language": "text",
+    "condition": {
+      "enabled": true
+    }
+  },
+  "enabled": {
+    "description": "是否开启自动截图互动",
+    "type": "bool",
+    "hint": "自动观察总开关。关闭后仍可继续用手动识屏和 WebUI。",
+    "default": false
+  },
+
+  "interaction_mode": {
+    "description": "互动模式",
+    "type": "string",
+    "hint": "目前保留为“自定义”。",
+    "default": "自定义",
+    "enum": [
+      "自定义"
+    ],
+    "condition": {
+      "enabled": true
+    }
+  },
+  "check_interval": {
+    "description": "检查间隔",
+    "type": "int",
+    "hint": "每隔多少秒判断一次要不要主动识屏。越小越频繁。",
+    "default": 300,
+    "obvious_hint": true,
+    "condition": {
+      "enabled": true
+    }
+  },
+  "trigger_probability": {
+    "description": "触发概率",
+    "type": "int",
+    "hint": "每次判定真正触发的概率（0-100）。越高越容易主动说话。",
+    "default": 30,
+    "obvious_hint": true,
+    "condition": {
+      "enabled": true
+    }
+  },
+  "active_time_range": {
+    "description": "活跃时间段",
+    "type": "string",
+    "hint": "选填，可留空。限制自动观察只在这段时间内运行。格式：`HH:MM-HH:MM`，如 `09:00-22:00`；留空表示全天。",
+    "default": "",
+    "obvious_hint": true,
+    "condition": {
+      "enabled": true
+    }
+  },
+  "custom_presets": {
+    "description": "自定义预设",
+    "type": "text",
+    "hint": "选填，可留空。常用配置模板。格式：`预设名|检查间隔秒|触发概率`，每行一个。",
+    "default": "",
+    "editor_mode": true,
+    "editor_language": "text",
+    "condition": {
+      "enabled": true
+    }
+  },
+  "current_preset_index": {
+    "description": "当前使用的预设",
+    "type": "int",
+    "hint": "要启用的预设序号，从 0 开始；填 `-1` 表示不用预设。",
+    "default": -1,
+    "obvious_hint": true,
+    "condition": {
+      "enabled": true
+    }
+  },
+  "interaction_style_mode": {
+    "description": "互动风格",
+    "type": "string",
+    "hint": "三选一。陪伴更连续，偷看更低打扰，普通最中性。",
+    "default": "普通",
+    "enum": [
+      "普通",
+      "陪伴",
+      "偷看"
+    ],
+    "condition": {
+      "enabled": true
+    }
+  },
+  "companion_prompt": {
+    "description": "陪伴模式专用人格",
+    "type": "text",
+    "hint": "选填，可留空。只在“陪伴”风格下生效；不填就沿用上面的系统提示词。",
+    "default": "",
+    "editor_mode": true,
+    "editor_language": "text",
+    "condition": {
+      "enabled": true,
+      "interaction_style_mode": "陪伴"
+    }
+  },
+  "enable_usage_context_autopilot": {
+    "description": "允许自动参考使用情况",
+    "type": "bool",
+    "hint": "允许 Bot 在需要时参考最近的应用、页面和停留时长。",
+    "default": false,
+    "condition": {
+      "enabled": true
+    }
+  },
+  "enable_local_browser_history": {
+    "description": "允许读取本地浏览器历史",
+    "type": "bool",
+    "hint": "允许从本机 Chromium 浏览器历史中读取最近访问记录。更敏感，不需要就别开。",
+    "default": false,
+    "condition": {
+      "enabled": true,
+      "enable_usage_context_autopilot": true
+    }
+  },
+  "usage_context_lookback_hours": {
+    "description": "使用轨迹回看时长（小时）",
+    "type": "int",
+    "hint": "最多回看最近多少小时的活动轨迹。",
+    "default": 6,
+    "min": 1,
+    "max": 72,
+    "condition": {
+      "enabled": true,
+      "enable_usage_context_autopilot": true
+    }
+  },
+  "browser_history_lookback_minutes": {
+    "description": "浏览历史回看时长（分钟）",
+    "type": "int",
+    "hint": "读取浏览历史时最多回看最近多少分钟。",
+    "default": 180,
+    "min": 10,
+    "max": 1440,
+    "condition": {
+      "enabled": true,
+      "enable_usage_context_autopilot": true,
+      "enable_local_browser_history": true
+    }
+  },
+  "usage_context_item_limit": {
+    "description": "使用情况最多参考条数",
+    "type": "int",
+    "hint": "每次最多参考多少条使用情况线索。",
+    "default": 6,
+    "min": 1,
+    "max": 12,
+    "condition": {
+      "enabled": true,
+      "enable_usage_context_autopilot": true
+    }
+  },
+  "screen_recognition_mode": {
+    "description": "开启视频识别",
+    "type": "bool",
+    "hint": "开启后用短录屏识别；关闭后只看当前截图。remote_mode 下会读取客户端上传的录屏。",
+    "default": false,
+    "condition": {
+      "enabled": true
+    }
+  },
+  "ffmpeg_path": {
+    "description": "ffmpeg 可执行文件路径",
+    "type": "string",
+    "hint": "选填，可留空。只在录屏模式下需要；一般留空自动查找。macOS 可用 brew install ffmpeg，并授予屏幕录制权限。",
+    "default": "",
+    "condition": {
+      "enabled": true,
+      "screen_recognition_mode": true
+    }
+  },
+  "recording_fps": {
+    "description": "录屏帧率",
+    "type": "float",
+    "hint": "录屏每秒采多少帧。越高越清楚，也越费资源。",
+    "default": 1,
+    "min": 0.01,
+    "max": 30,
+    "condition": {
+      "enabled": true,
+      "screen_recognition_mode": true
+    }
+  },
+  "recording_duration_seconds": {
+    "description": "录屏时长（秒）",
+    "type": "int",
+    "hint": "每次录多长时间。越长越完整，也越费时间和 token。",
+    "default": 10,
+    "min": 1,
+    "max": 300,
+    "condition": {
+      "enabled": true,
+      "screen_recognition_mode": true
+    }
+  },
+  "capture_active_window": {
+    "description": "只截取活动窗口",
+    "type": "bool",
+    "hint": "截图模式下只截当前窗口，不截全屏。",
+    "default": false,
+    "condition": {
+      "enabled": true,
+      "screen_recognition_mode": false
+    }
+  },
+  "bot_vision_quality": {
+    "description": "Bot 近视程度",
+    "type": "int",
+    "hint": "值越高看得越清楚（0-100）。",
+    "default": 100,
+    "min": 1,
+    "max": 100,
+    "condition": {
+      "enabled": true
+    }
+  },
+  "image_prompt": {
+    "description": "图像识别提示词",
+    "type": "text",
+    "hint": "告诉视觉模型重点看什么。建议短一点，优先任务、进度、异常和建议。",
+    "default": "请用尽量少的字分析这张屏幕截图，只输出高价值信息。优先判断：1. 用户当前在做什么任务 2. 进行到哪一步 3. 画面里最关键的线索或异常 4. 如果需要互动，最值得给出的一个任务相关建议点。避免大段描述界面，不要重复无意义细节，控制在4行内。",
+    "editor_mode": true,
+    "editor_language": "text",
+    "condition": {
+      "enabled": true
+    }
+  },
+  "use_external_vision": {
+    "description": "优先走视觉 provider 两段链路",
+    "type": "bool",
+    "hint": "开启后先走视觉 provider 做识别，再交给聊天模型回复。一般建议开启。",
+    "default": true,
+    "condition": {
+      "enabled": true
+    }
+  },
+  "allow_unsafe_video_direct_fallback": {
+    "description": "允许兼容视频直发回退",
+    "type": "bool",
+    "hint": "录屏直发当前 provider 的兼容回退开关。通常只在排障时使用。",
+    "default": false,
+    "condition": {
+      "enabled": true,
+      "use_external_vision": false,
+      "screen_recognition_mode": true
+    }
+  },
+  "vision_provider_id": {
+    "description": "视觉识别模型提供商",
+    "type": "string",
+    "default": "",
+    "hint": "选填。用于屏幕图片识别；开启外部视觉时作为视觉 provider，关闭外部视觉时也会先用它转述画面，再交给当前主模型回复。",
+    "_special": "select_provider",
+    "condition": {
+      "enabled": true
+    }
+  },
+  "vision_provider_id_backup": {
+    "description": "备用视觉模型提供商",
+    "type": "string",
+    "default": "",
+    "hint": "选填，可留空。主视觉 provider 失败时回退到这里。",
+    "_special": "select_provider",
+    "condition": {
+      "enabled": true
+    }
+  },
+  "enable_privacy_guard": {
+    "description": "开启隐私输出保护",
+    "type": "bool",
+    "hint": "建议开启。尽量少直接复述屏幕里的敏感文本。",
+    "default": true,
+    "condition": {
+      "enabled": true
+    }
+  },
+  "user_preferences": {
+    "description": "用户偏好设置",
+    "type": "text",
+    "hint": "按场景写你希望 Bot 怎么陪你。格式：`场景名 空格 描述`，每行一条。",
+    "default": "游戏 专业的游戏高手，指导玩家提升水平",
+    "editor_mode": true,
+    "editor_language": "text",
+    "condition": {
+      "enabled": true
+    }
+  },
+  "use_llm_for_start_end": {
+    "description": "使用 LLM 回复开始和结束消息",
+    "type": "bool",
+    "hint": "开启后，开始/结束观察时自动生成一句话；关闭则使用固定文案。是否发送由“发送开始/结束提醒”控制。",
+    "default": true,
+    "condition": {
+      "enabled": true
+    }
+  },
+  "enable_start_end_messages": {
+    "description": "发送开始/结束提醒",
+    "type": "bool",
+    "hint": "关闭后，启动、停止、自动挂起和窗口陪伴切换时不再发送提醒消息。",
+    "default": true,
+    "condition": {
+      "enabled": true
+    }
+  },
+  "start_preset": {
+    "description": "开始预设回复",
+    "type": "string",
+    "hint": "关闭 LLM 生成时，开始观察后发送的固定文案。",
+    "default": "知道啦~我会时不时过来看一眼的",
+    "condition": {
+      "enabled": true,
+      "enable_start_end_messages": true,
+      "use_llm_for_start_end": false
+    }
+  },
+  "end_preset": {
+    "description": "结束预设回复",
+    "type": "string",
+    "hint": "关闭 LLM 生成时，结束观察后发送的固定文案。",
+    "default": "好啦，我不看了～下次再陪你玩！",
+    "condition": {
+      "enabled": true,
+      "enable_start_end_messages": true,
+      "use_llm_for_start_end": false
+    }
+  },
+  "start_llm_prompt": {
+    "description": "开始 LLM 提示词",
+    "type": "text",
+    "hint": "开始观察文案的生成提示词。",
+    "default": "以你的性格向用户表达你会开始偶尔地偷看用户的屏幕了，尽可能简短，保持在一句话内。",
+    "editor_mode": true,
+    "editor_language": "text",
+    "condition": {
+      "enabled": true,
+      "enable_start_end_messages": true,
+      "use_llm_for_start_end": true
+    }
+  },
+  "end_llm_prompt": {
+    "description": "结束 LLM 提示词",
+    "type": "text",
+    "hint": "结束观察文案的生成提示词。",
+    "default": "以你的性格向用户表达你停止看用户的屏幕了，尽可能简短，保持在一句话内。",
+    "editor_mode": true,
+    "editor_language": "text",
+    "condition": {
+      "enabled": true,
+      "enable_start_end_messages": true,
+      "use_llm_for_start_end": true
+    }
+  },
+  "enable_diary": {
+    "description": "启用日记功能",
+    "type": "bool",
+    "hint": "开启后，Bot 会按时生成当天的日记式回顾。",
+    "default": true,
+    "condition": {
+      "enabled": true
+    }
+  },
+  "diary_time": {
+    "description": "日记生成时间",
+    "type": "string",
+    "hint": "每天自动生成日记的时间。格式：`HH:MM`，如 `00:00`。",
+    "default": "00:00",
+    "condition": {
+      "enabled": true,
+      "enable_diary": true
+    }
+  },
+  "diary_storage": {
+    "description": "日记存储路径",
+    "type": "string",
+    "hint": "选填，可留空。日记存储目录；不填就使用插件默认目录。",
+    "default": "",
+    "condition": {
+      "enabled": true,
+      "enable_diary": true
+    }
+  },
+  "diary_reference_days": {
+    "description": "日记参考天数",
+    "type": "int",
+    "hint": "生成当天日记时，顺带参考前几天的内容。填 0 表示只看当天。",
+    "default": 2,
+    "condition": {
+      "enabled": true,
+      "enable_diary": true
+    }
+  },
+  "diary_auto_recall": {
+    "description": "是否自动撤回日记",
+    "type": "bool",
+    "hint": "开启后，发出去的日记会在设定时间后自动撤回。",
+    "default": false,
+    "condition": {
+      "enabled": true,
+      "enable_diary": true
+    }
+  },
+  "diary_recall_time": {
+    "description": "日记自动撤回时间（秒）",
+    "type": "int",
+    "hint": "发送日记后多少秒自动撤回。",
+    "default": 30,
+    "condition": {
+      "enabled": true,
+      "enable_diary": true,
+      "diary_auto_recall": true
+    }
+  },
+
+  "diary_send_as_image": {
+    "description": "以图片形式发送日记",
+    "type": "bool",
+    "hint": "开启后，日记会转成图片发送；关闭则直接发文本。",
+    "default": false,
+    "condition": {
+      "enabled": true,
+      "enable_diary": true
+    }
+  },
+
+  "diary_generation_prompt": {
+    "description": "日记生成提示词",
+    "type": "text",
+    "hint": "控制日记的文风和侧重点。",
+    "default": "请根据今天的观察记录，写一篇日记总结，记录今天的观察和感受，融入你的性格和情感。不要只是对观察记录的生硬总结，而是要融合你的经历和情感，生成一个更个人化的日记。请字数控制在400字左右。",
+    "editor_mode": true,
+    "editor_language": "text",
+    "condition": {
+      "enabled": true,
+      "enable_diary": true
+    }
+  },
+  "weather_api_key": {
+    "description": "天气API密钥",
+    "type": "string",
+    "hint": "选填，可留空。不填就不启用天气功能。",
+    "default": "",
+    "condition": {
+      "enabled": true
+    }
+  },
+  "weather_city": {
+    "description": "城市名称",
+    "type": "string",
+    "hint": "选填，可留空。启用天气功能时再填城市名，例如 `Shanghai` 或 `上海`。",
+    "default": "",
+    "condition": {
+      "enabled": true,
+      "weather_api_key": ""
+    }
+  },
+  "enable_mic_monitor": {
+    "description": "启用麦克风监听",
+    "type": "bool",
+    "hint": "开启后会监听麦克风音量，超过阈值时可触发一次识屏。",
+    "default": false,
+    "condition": {
+      "enabled": true
+    }
+  },
+  "mic_threshold": {
+    "description": "麦克风音量阈值",
+    "type": "int",
+    "hint": "麦克风音量高于这个值时才算触发。",
+    "default": 60,
+    "condition": {
+      "enabled": true,
+      "enable_mic_monitor": true
+    }
+  },
+  "mic_check_interval": {
+    "description": "麦克风检查间隔",
+    "type": "int",
+    "hint": "每隔多少秒检查一次麦克风音量。",
+    "default": 5,
+    "condition": {
+      "enabled": true,
+      "enable_mic_monitor": true
+    }
+  },
+  "enable_input_stats": {
+    "description": "启用本地输入统计",
+    "type": "bool",
+      "hint": "开启后统计键盘输入，用来判断活跃度和生成回顾。为避免 Windows 鼠标钩子卡顿，默认不监听鼠标。",
+    "default": false,
+    "condition": {
+      "enabled": true
+    }
+  },
+  "enable_background_activity_tracking": {
+    "description": "启用独立活动轨迹采集",
+    "type": "bool",
+    "hint": "开启后会定时记录当前活动窗口，即使自动观察没开也会记录。",
+    "default": false,
+    "condition": {
+      "enabled": true
+    }
+  },
+  "background_activity_tracking_interval": {
+    "description": "独立轨迹采样间隔",
+    "type": "int",
+    "hint": "每隔多少秒记录一次当前活动窗口。",
+    "default": 15,
+    "min": 5,
+    "max": 3600,
+    "condition": {
+      "enabled": true,
+      "enable_background_activity_tracking": true
+    }
+  },
+  "input_stats_flush_interval": {
+    "description": "输入统计落盘间隔",
+    "type": "int",
+    "hint": "每隔多少秒把输入统计写回本地文件。",
+    "default": 60,
+    "min": 10,
+    "max": 3600,
+    "condition": {
+      "enabled": true,
+      "enable_input_stats": true
+    }
+  },
+  "enable_away_auto_pause": {
+    "description": "离开电脑时自动挂起观察",
+    "type": "bool",
+    "hint": "长时间没有键盘输入时，自动观察会暂停；回来后自动恢复。",
+    "default": false,
+    "condition": {
+      "enabled": true,
+      "enable_input_stats": true
+    }
+  },
+  "away_auto_pause_threshold": {
+    "description": "自动挂起阈值",
+    "type": "int",
+    "hint": "连续多久没有输入后，判定为离开电脑。",
+    "default": 1200,
+    "min": 300,
+    "max": 14400,
+    "condition": {
+      "enabled": true,
+      "enable_input_stats": true,
+      "enable_away_auto_pause": true
+    }
+  },
+  "away_long_notice_threshold": {
+    "description": "长时间离开提醒阈值",
+    "type": "int",
+    "hint": "离开多久后发一次轻提醒。",
+    "default": 3600,
+    "min": 600,
+    "max": 86400,
+    "condition": {
+      "enabled": true,
+      "enable_input_stats": true,
+      "enable_away_auto_pause": true
+    }
+  },
+  "mask_activity_window_titles": {
+    "description": "活动页窗口标题脱敏",
+    "type": "bool",
+    "hint": "开启后，活动页里的窗口标题会统一脱敏。",
+    "default": false,
+    "condition": {
+      "enabled": true
+    }
+  },
+  "activity_recognition_rules": {
+    "description": "活动识别自定义规则",
+    "type": "text",
+    "hint": "每行一条。格式：`app|关键词|显示名` 或 `site|域名/关键词|显示名`，支持 `#` 注释。",
+    "default": "",
+    "condition": {
+      "enabled": true
+    }
+  },
+  "memory_threshold": {
+    "description": "内存阈值",
+    "type": "int",
+    "hint": "内存使用率超过这个值时提醒用户，范围 0-100。",
+    "default": 80,
+    "condition": {
+      "enabled": true
+    }
+  },
+  "battery_threshold": {
+    "description": "电量阈值",
+    "type": "int",
+    "hint": "设备电量低于这个值时提醒用户，范围 0-100。",
+    "default": 20,
+    "condition": {
+      "enabled": true
+    }
+  },
+  "admin_qq": {
+    "description": "管理员QQ号",
+    "type": "string",
+    "hint": "选填，可留空。管理员或主人的 QQ 号，用于主动消息和管理员能力识别。",
+    "default": "",
+    "condition": {
+      "enabled": true
+    }
+  },
+  "proactive_target": {
+    "description": "主动消息推送目标",
+    "type": "string",
+      "hint": "选填，可留空。接收主动消息的统一会话 ID，例如 `default:FriendMessage:123456`；不填就不主动推送。",
+    "default": "",
+    "condition": {
+      "enabled": true
+    }
+  },
+  "enable_proactive_decorating_hooks": {
+    "description": "主动消息触发装饰钩子",
+    "type": "bool",
+    "hint": "开启后，主动消息发送前会触发 OnDecoratingResultEvent，允许其它插件继续装饰或改写消息链。",
+    "default": true,
+    "condition": {
+      "enabled": true
+    }
+  },
+  "save_local": {
+    "description": "是否在本地保留最近一次识别素材",
+    "type": "bool",
+    "hint": "是否在本地保留最近一次截图或录屏，方便排查。",
+    "default": true,
+    "condition": {
+      "enabled": true
+    }
+  },
+  "enable_natural_language_screen_assist": {
+    "description": "启用自然语言识屏技能",
+    "type": "bool",
+    "hint": "开启后，管理员在对话里明确求助时，Bot 会主动识屏后再回答。",
+    "default": false,
+    "condition": {
+      "enabled": true
+    }
+  },
+  "screen_skill_prompt": {
+    "description": "内置识屏技能提示词",
+    "type": "text",
+    "hint": "选填，可留空。给内置识屏技能补充额外约束；不填就使用默认规则。",
+    "default": "",
+    "editor_mode": true,
+    "editor_language": "text",
+    "condition": {
+      "enabled": true,
+      "enable_natural_language_screen_assist": true
+    }
+  },
+  "use_shared_screenshot_dir": {
+    "description": "启用共享截图目录",
+    "type": "bool",
+    "hint": "主要给 Docker 或远程环境用。开启后优先从共享目录读取截图。",
+    "default": false,
+    "condition": {
+      "enabled": true,
+      "screen_recognition_mode": false
+    }
+  },
+  "shared_screenshot_dir": {
+    "description": "共享截图目录路径",
+    "type": "string",
+    "hint": "选填，可留空。启用共享截图目录后再填这里的路径。",
+    "default": "",
+    "condition": {
+      "enabled": true,
+      "use_shared_screenshot_dir": true,
+      "screen_recognition_mode": false
+    }
+  },
+  "remote_mode": {
+    "description": "远程识屏模式",
+    "type": "bool",
+    "hint": "开启后，插件不再本地截图，而是通过 WebSocket 接收客户端推送的截图；开启视频识别时也会接收客户端上传的录屏。",
+    "default": false
+  },
+  "remote_ws_port": {
+    "description": "远程 WebSocket 端口",
+    "type": "int",
+    "hint": "WebSocket 监听端口，客户端通过此端口推送截图。默认 6315。",
+    "default": 6315,
+    "min": 1,
+    "max": 65535,
+    "condition": {
+      "remote_mode": true
+    }
+  },
+  "remote_auth_token": {
+    "description": "远程认证令牌",
+    "type": "string",
+    "hint": "客户端连接时使用的认证令牌。留空则不认证，不推荐。",
+    "default": "",
+    "condition": {
+      "remote_mode": true
+    }
+  },
+  "remote_screenshot_max_age": {
+    "description": "远程截图最大时效",
+    "type": "int",
+    "hint": "单位为秒。超过这个时间未收到新截图时，会把远程画面判定为过期。默认 60 秒。",
+    "default": 60,
+    "min": 5,
+    "max": 86400,
+    "condition": {
+      "remote_mode": true
+    }
+  },
+  "custom_tasks": {
+    "description": "自定义监控任务",
+    "type": "text",
+    "hint": "选填，可留空。定时提醒任务，格式：`时间 空格 提示词`，每行一条。",
+    "default": "",
+    "editor_mode": true,
+    "editor_language": "text",
+    "condition": {
+      "enabled": true
+    }
+  },
+  "rest_time_range": {
+    "description": "用户休息时间",
+    "type": "string",
+    "hint": "用户通常休息的时间范围。格式：`HH:MM-HH:MM`，如 `22:00-06:00`。",
+    "default": "22:00-06:00",
+    "condition": {
+      "enabled": true
+    }
+  },
+  "enable_learning": {
+    "description": "启用用户行为学习",
+    "type": "bool",
+    "hint": "开启后，插件会根据反馈逐步调整互动方式。",
+    "default": true,
+    "condition": {
+      "enabled": true
+    }
+  },
+  "learning_storage": {
+    "description": "学习数据存储路径",
+    "type": "string",
+    "hint": "选填，可留空。学习数据存储目录；不填就使用插件默认目录。",
+    "default": "",
+    "condition": {
+      "enabled": true,
+      "enable_learning": true
+    }
+  },
+  "bot_appearance": {
+    "description": "Bot 外形描述",
+    "type": "text",
+    "hint": "选填，可留空。描述 Bot 的外形，供识别自己时参考。",
+    "default": "",
+    "condition": {
+      "enabled": true
+    }
+  },
+  "interaction_kpi": {
+    "description": "快捷切换配置",
+    "type": "int",
+    "hint": "互动强度快捷档位：1 最轻，5 最重。",
+    "default": 3,
+    "enum": [1, 2, 3, 4, 5]
+  },
+  "debug": {
+    "description": "调试模式",
+    "type": "bool",
+    "hint": "开启后显示更详细的日志。",
+    "default": false
+  },
+  "webui": {
+    "description": "Web UI 配置",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用 Web UI",
+        "type": "bool",
+        "hint": "开启后启动 Web UI 服务器，可通过浏览器访问观察记录和日记",
+        "default": false
+      },
+      "host": {
+        "description": "Web UI 主机",
+        "type": "string",
+        "hint": "Web UI 服务器监听的主机地址，0.0.0.0 表示所有网络接口",
+        "default": "0.0.0.0"
+      },
+      "port": {
+        "description": "Web UI 端口",
+        "type": "int",
+        "hint": "Web UI 服务器监听的端口",
+        "default": 6314
+      },
+      "auth_enabled": {
+        "description": "启用 Web UI 认证",
+        "type": "bool",
+        "hint": "开启后访问 Web UI 需要输入密码",
+        "default": true
+      },
+      "password": {
+        "description": "Web UI 密码",
+        "type": "string",
+        "hint": "访问 Web UI 时需要输入的密码，留空表示不需要密码",
+        "default": ""
+      },
+      "session_timeout": {
+        "description": "Web UI 会话超时",
+        "type": "int",
+        "hint": "Web UI 会话的超时时间（秒）",
+        "default": 3600
+      },
+      "allow_external_api": {
+        "description": "允许外部API调用",
+        "type": "bool",
+        "hint": "允许外部系统调用API分析图片，调用需要提供密码认证",
+        "default": false
+      }
+    }
+  }
+}

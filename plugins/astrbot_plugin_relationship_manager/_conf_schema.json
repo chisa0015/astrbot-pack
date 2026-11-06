@@ -1,0 +1,27 @@
+{
+  "data_path": {
+    "description": "数据存储路径",
+    "type": "string",
+    "hint": "用于存放 blacklist.json、pending.json 等插件数据。",
+    "default": "data"
+  },
+  "notify_group": {
+    "description": "通知群号",
+    "type": "string",
+    "hint": "设置后所有通知发送到该群；留空则私聊通知 AstrBot 管理员 / bot 主。",
+    "default": ""
+  },
+  "notify_qq": {
+    "description": "额外接收通知的 QQ 号列表",
+    "type": "list",
+    "items": {"type": "string"},
+    "hint": "填写的 QQ 号会收到所有插件通知（私聊）。多个用逗号或列表项分隔。如果同时设置了 notify_group，notify_qq 会额外收到一条私聊副本。",
+    "default": []
+  },
+  "ban_forward_history_count": {
+    "description": "被禁言前转发聊天记录数量",
+    "type": "int",
+    "hint": "Bot 被群禁言时，向 bot 主/通知群合并转发禁言前最近 N 条群聊记录。设为 0 可关闭聊天记录转发，最大 100。",
+    "default": 20
+  }
+}

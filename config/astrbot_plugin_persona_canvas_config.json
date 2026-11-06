@@ -1,0 +1,7 @@
+﻿{
+  "enable_webui": true,
+  "enable_legacy_webui": true,
+  "webui_host": "127.0.0.1",
+  "webui_port": 3018,
+  "webui_token": "yesha-local-token"
+}

@@ -1,0 +1,32 @@
+﻿{
+    "keywords":  {
+                     "description":  "触发词（逗号分隔，命中任意一个就发）",
+                     "type":  "string",
+                     "default":  "色图,涩图,瑟图"
+                 },
+    "r18":  {
+                "description":  "分级：0=全年龄 1=含R18 2=只要R18",
+                "type":  "int",
+                "default":  0
+            },
+    "cooldown_sec":  {
+                         "description":  "同一会话的冷却秒数（防刷屏）",
+                         "type":  "int",
+                         "default":  15
+                     },
+    "caption":  {
+                    "description":  "发图时附的一句话（留空则只发图）",
+                    "type":  "string",
+                    "default":  "拿去，别催"
+                },
+    "size":  {
+                 "description":  "图片尺寸：small(540px·约4秒) / regular(原图较大·约40秒+)",
+                 "default":  "small",
+                 "type":  "string"
+             },
+    "source":  {
+                   "description":  "图源：setu_plugin=借用瑟瑟插件(astrbot_plugin_setu) / builtin=本插件内置 lolicon",
+                   "default":  "setu_plugin",
+                   "type":  "string"
+               }
+}

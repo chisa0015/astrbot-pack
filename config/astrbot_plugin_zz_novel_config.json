@@ -1,0 +1,7 @@
+{
+  "source": "linovel",
+  "chapters_per_pdf": 3,
+  "max_chars_per_chapter": 6000,
+  "cover_enhance": "on",
+  "pdf_keep_days": 7
+}

@@ -1,0 +1,19 @@
+﻿{
+  "reply_mode": "image",
+  "auto_sync_enable": true,
+  "auto_sync_hour": 4,
+  "sync_detail_limit": 1000,
+  "inject_guidance": true,
+  "guidance_text": "",
+  "search_mode": "auto",
+  "search_max_chars": 10,
+  "gate_mode": "llm",
+  "gate_provider_id": "",
+  "gate_timeout": 1.2,
+  "gate_cache_ttl": 600,
+  "search_timeout": 6.0,
+  "archive_enable": true,
+  "archive_ttl_days": 90,
+  "archive_miss_ttl_days": 3,
+  "inject_deadline": 6.0
+}
