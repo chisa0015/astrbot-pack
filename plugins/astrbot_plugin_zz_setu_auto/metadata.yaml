@@ -2,5 +2,5 @@ name: astrbot_plugin_zz_setu_auto
 display_name: 色图自动应答
 desc: 消息里出现「色图/涩图/瑟图」就自动丢一张；带冷却、可限 R18、不抢别的命令
 version: v1.0.0
-author: 夜煞
+author: 千夏
 repo: ""

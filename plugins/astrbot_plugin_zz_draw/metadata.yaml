@@ -2,5 +2,5 @@ name: astrbot_plugin_zz_draw
 display_name: 生图 / 图生图
 desc: 生图/画图=txt2img，带图或说「图生图/改图/重绘」=img2img；本地 ComfyUI，两段式精修（手指细节）+ 手部加权词
 version: v1.1.0
-author: 夜煞
+author: 千夏
 repo: ""
