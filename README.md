@@ -50,6 +50,32 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -AstrBotDir "D:\AstrBot"
 
 **配置**：`config/config.example.json` 只是参考，**不要直接覆盖**你已有的 `config.json`，按字段对照着改。
 
+## 插件来源（重要）
+
+整合包里打包的插件，**绝大部分是第三方开源项目**，版权归原作者。下表标注每个插件的原始仓库：
+
+| 插件目录 | 作者 | 原始仓库 | 版本 | 性质 |
+|---|---|---|---|---|
+| `astrbot_plugin_bitchfinder` | vmoranv | [vmoranv/astrbot_plugin_bitchfinder](https://github.com/vmoranv/astrbot_plugin_bitchfinder) | v1.0.0 | 第三方 |
+| `astrbot_plugin_chorus_cover` | void-HaoNan | [void-HaoNan/astrbot-plugin-chorus-cover](https://github.com/void-HaoNan/astrbot-plugin-chorus-cover) | 0.19.11 | 第三方 |
+| `astrbot_plugin_zz_trace` | 鲸鱼娘 | 本仓库（自建） | v1.1.0 | 自建 |
+
+**说明**：
+
+- 第三方插件请以**原始仓库**为最新版本来源，本整合包只是打包了一个时间点的快照
+- 二次分发请遵守各自仓库的 LICENSE（都已保留在插件目录里）
+- 自建插件（`zz_trace`）在本仓库内维护，源码就是 `plugins/astrbot_plugin_zz_trace_20261031/`
+
+### 未打包但相关的插件
+
+以下插件曾在本机 AstrBot 里装过，但**没打进整合包**（已移除或停用）：
+
+| 插件 | 作者 | 原始仓库 | 状态 |
+|---|---|---|---|
+| `astrbot_plugin_persona_router` | CGTouhou | [CGTouhou](https://github.com/CGTouhou) | 已移除 |
+| `astrbot_plugin_persona_switch` | 自建 | 本仓库（自建） | 已移除 |
+| `astrbot_plugin_stealer` | nagatoquin33 | [nagatoquin33/astrbot_plugin_stealer](https://github.com/nagatoquin33/astrbot_plugin_stealer) | 已移除 |
+
 ## 插件说明
 
 ### astrbot_plugin_bitchfinder
